@@ -1,0 +1,6 @@
+{
+  "name": "FedEx Global Control Tower",
+  "description": "A high-precision logistics management dashboard for tracking global shipments, featuring secure PIN access and real-time status monitoring.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

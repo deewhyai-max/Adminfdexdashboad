@@ -62,6 +62,19 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     setIsInitializing(true);
     setError(null);
     
+    // --- SESSION CHECK-FIRST PROTOCOL ---
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      console.warn("Session expired or missing. Attempting restoration...");
+      const { data: { user: recoveredUser }, error: recoveryError } = await supabase.auth.getUser();
+      if (recoveryError || !recoveredUser) {
+        setIsInitializing(false);
+        setError("Administrative session expired. Please re-authenticate at the Gateway.");
+        return;
+      }
+    }
+    // ------------------------------------
+
     const trackingId = generateTrackingId();
     
     const firstHistoryEntry: ShipmentHistoryItem = {

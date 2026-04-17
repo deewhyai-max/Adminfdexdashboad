@@ -75,9 +75,14 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
     const updatedHistory = [newHistoryItem, ...shipment.history];
 
     try {
-      // Auth Check
-      const { data: { user }, error: authError } = await supabase.auth.getUser();
-      if (authError || !user) throw new Error('Authentication required');
+      // --- SESSION CHECK-FIRST PROTOCOL ---
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        console.warn("Update Protocol: Session missing. Restoring token hierarchy...");
+        const { data: { user: recoveredUser }, error: recoveryError } = await supabase.auth.getUser();
+        if (recoveryError || !recoveredUser) throw new Error('Administrative link broken. Re-login required.');
+      }
+      // ------------------------------------
 
       const { error: updateError } = await supabase
         .from('shipments')

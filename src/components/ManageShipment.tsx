@@ -52,6 +52,10 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
   const [address, setAddress] = useState(shipment?.destination_address || '');
   const [origin, setOrigin] = useState(shipment?.origin_city_state || '');
   const [valuation, setValuation] = useState(shipment?.asset_value.toString() || '0');
+  const [fee, setFee] = useState(shipment?.service_fee.toString() || '0');
+  const [entryTime, setEntryTime] = useState(shipment?.created_at ? new Date(shipment.created_at).toISOString().slice(0, 16) : '');
+  const [deliveryDate, setDeliveryDate] = useState(shipment?.estimated_delivery_date || '');
+  
   const [isEditingDocs, setIsEditingDocs] = useState(false);
   const [isSavingDocs, setIsSavingDocs] = useState(false);
 
@@ -63,6 +67,9 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
       setAddress(shipment.destination_address);
       setOrigin(shipment.origin_city_state);
       setValuation(shipment.asset_value.toString());
+      setFee(shipment.service_fee.toString());
+      setEntryTime(shipment.created_at ? new Date(shipment.created_at).toISOString().slice(0, 16) : '');
+      setDeliveryDate(shipment.estimated_delivery_date || '');
     }
   }, [shipment]);
 
@@ -85,14 +92,19 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
       }
       // ------------------------------------
 
+      const updatedData = {
+        recipient_name: recipient,
+        destination_address: address,
+        origin_city_state: origin,
+        asset_value: parseFloat(valuation) || 0,
+        service_fee: parseFloat(fee) || 0,
+        created_at: entryTime ? new Date(entryTime).toISOString() : shipment.created_at,
+        estimated_delivery_date: deliveryDate
+      };
+
       const { error: updateError } = await supabase
         .from('shipments')
-        .update({
-          recipient_name: recipient,
-          destination_address: address,
-          origin_city_state: origin,
-          asset_value: parseFloat(valuation) || 0
-        })
+        .update(updatedData)
         .eq('id', shipment.id)
         .eq('user_id', userId);
 
@@ -100,10 +112,7 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
 
       const updatedShipment = {
         ...shipment,
-        recipient_name: recipient,
-        destination_address: address,
-        origin_city_state: origin,
-        asset_value: parseFloat(valuation) || 0
+        ...updatedData
       };
 
       onUpdate(updatedShipment);
@@ -282,16 +291,29 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
 
               {isEditingDocs ? (
                 <form onSubmit={handleUpdateCoreDetails} className="space-y-6">
-                  <div className="space-y-2">
-                    <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Recipient Name</label>
-                    <input 
-                      type="text"
-                      value={recipient}
-                      onChange={(e) => setRecipient(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-purple transition-all text-sm font-bold text-slate-900"
-                      style={{ fontSize: '16px' }}
-                    />
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Recipient Name</label>
+                      <input 
+                        type="text"
+                        value={recipient}
+                        onChange={(e) => setRecipient(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-purple transition-all text-sm font-bold text-slate-900"
+                        style={{ fontSize: '16px' }}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Origin City/State</label>
+                      <input 
+                        type="text"
+                        value={origin}
+                        onChange={(e) => setOrigin(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-purple transition-all text-sm font-bold text-slate-900"
+                        style={{ fontSize: '16px' }}
+                      />
+                    </div>
                   </div>
+
                   <div className="space-y-2">
                     <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Destination Address</label>
                     <textarea 
@@ -301,27 +323,55 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                       style={{ fontSize: '16px' }}
                     />
                   </div>
-                  <div className="space-y-2">
-                    <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Origin City/State</label>
-                    <input 
-                      type="text"
-                      value={origin}
-                      onChange={(e) => setOrigin(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-purple transition-all text-sm font-bold text-slate-900"
-                      style={{ fontSize: '16px' }}
-                    />
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Valuation ($)</label>
+                      <input 
+                        type="number"
+                        step="0.01"
+                        value={valuation}
+                        onChange={(e) => setValuation(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-purple transition-all text-sm font-bold text-slate-900 font-mono"
+                        style={{ fontSize: '16px' }}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Service Fee ($)</label>
+                      <input 
+                        type="number"
+                        step="0.01"
+                        value={fee}
+                        onChange={(e) => setFee(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-purple transition-all text-sm font-bold text-slate-900 font-mono"
+                        style={{ fontSize: '16px' }}
+                      />
+                    </div>
                   </div>
-                  <div className="space-y-2">
-                    <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Valuation ($)</label>
-                    <input 
-                      type="number"
-                      step="0.01"
-                      value={valuation}
-                      onChange={(e) => setValuation(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-purple transition-all text-sm font-bold text-slate-900 font-mono"
-                      style={{ fontSize: '16px' }}
-                    />
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Time of Entry</label>
+                      <input 
+                        type="datetime-local"
+                        value={entryTime}
+                        onChange={(e) => setEntryTime(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-purple transition-all text-sm font-bold text-slate-900"
+                        style={{ fontSize: '16px' }}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Est. Delivery</label>
+                      <input 
+                        type="date"
+                        value={deliveryDate}
+                        onChange={(e) => setDeliveryDate(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-purple transition-all text-sm font-bold text-slate-900"
+                        style={{ fontSize: '16px' }}
+                      />
+                    </div>
                   </div>
+
                   <button
                     type="submit"
                     disabled={isSavingDocs}
@@ -333,21 +383,44 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                 </form>
               ) : (
                 <div className="space-y-4">
-                  <div className="flex justify-between items-center py-2 border-b border-slate-50">
-                    <span className="text-slate-400 text-[9px] font-black uppercase tracking-widest">Recipient</span>
-                    <span className="text-slate-900 text-xs font-black uppercase">{shipment.recipient_name}</span>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="py-2 border-b border-slate-50">
+                      <span className="text-slate-400 text-[8px] font-black uppercase tracking-widest block mb-1">Recipient</span>
+                      <span className="text-slate-900 text-[11px] font-black uppercase truncate block">{shipment.recipient_name}</span>
+                    </div>
+                    <div className="py-2 border-b border-slate-50">
+                      <span className="text-slate-400 text-[8px] font-black uppercase tracking-widest block mb-1">Origin</span>
+                      <span className="text-slate-900 text-[11px] font-black uppercase truncate block">{shipment.origin_city_state || 'N/A'}</span>
+                    </div>
                   </div>
-                  <div className="flex justify-between items-center py-2 border-b border-slate-50">
-                    <span className="text-slate-400 text-[9px] font-black uppercase tracking-widest">Destination</span>
-                    <span className="text-slate-900 text-[10px] font-black uppercase text-right max-w-[150px] leading-tight italic text-slate-500">{shipment.destination_address || 'Unspecified Dest'}</span>
+
+                  <div className="py-2 border-b border-slate-50">
+                    <span className="text-slate-400 text-[8px] font-black uppercase tracking-widest block mb-1">Destination</span>
+                    <span className="text-slate-900 text-[10px] font-black uppercase italic text-slate-500 leading-tight block">{shipment.destination_address || 'Unspecified'}</span>
                   </div>
-                  <div className="flex justify-between items-center py-2 border-b border-slate-50">
-                    <span className="text-slate-400 text-[9px] font-black uppercase tracking-widest">Origin</span>
-                    <span className="text-slate-900 text-[10px] font-black uppercase text-right">{shipment.origin_city_state || 'Unspecified Origin'}</span>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="py-2 border-b border-slate-50">
+                      <span className="text-slate-400 text-[8px] font-black uppercase tracking-widest block mb-1">Valuation</span>
+                      <span className="text-slate-900 text-[11px] font-black font-mono tracking-tighter block">${shipment.asset_value.toLocaleString()}</span>
+                    </div>
+                    <div className="py-2 border-b border-slate-50">
+                      <span className="text-slate-400 text-[8px] font-black uppercase tracking-widest block mb-1">Service Fee</span>
+                      <span className="text-slate-900 text-[11px] font-black font-mono tracking-tighter block">${shipment.service_fee.toLocaleString()}</span>
+                    </div>
                   </div>
-                  <div className="flex justify-between items-center py-2">
-                    <span className="text-slate-400 text-[9px] font-black uppercase tracking-widest">Valuation</span>
-                    <span className="text-slate-900 text-xs font-black font-mono tracking-tighter">${shipment.asset_value.toLocaleString()}</span>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="py-2">
+                      <span className="text-slate-400 text-[8px] font-black uppercase tracking-widest block mb-1">Entry Time</span>
+                      <span className="text-slate-900 text-[9px] font-black uppercase block">
+                        {new Date(shipment.created_at).toLocaleDateString()} {new Date(shipment.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                      </span>
+                    </div>
+                    <div className="py-2">
+                      <span className="text-slate-400 text-[8px] font-black uppercase tracking-widest block mb-1">Est. Delivery</span>
+                      <span className="text-slate-900 text-[10px] font-black uppercase block">{shipment.estimated_delivery_date || 'N/A'}</span>
+                    </div>
                   </div>
                 </div>
               )}

@@ -71,8 +71,13 @@ export default function App() {
   useEffect(() => {
     // Auth Listeners & Initial Recovery
     supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
+      const activeUser = session?.user ?? null;
+      setUser(activeUser);
       setIsAuthReady(true);
+      
+      if (activeUser) {
+        fetchShipmentsForUser(activeUser.id);
+      }
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -81,18 +86,7 @@ export default function App() {
       
       if (activeUser) {
         console.log("Auth System Observer:", event, "| User Authenticated. Synchronizing Cloud Ledger...");
-        const { data, error } = await supabase
-          .from('shipments')
-          .select('*')
-          .eq('user_id', activeUser.id)
-          .order('created_at', { ascending: false });
-
-        if (error) {
-          console.error('Post-Login Recovery Critical Failure:', error);
-        } else if (data) {
-          console.log("Cloud Ledger Recovered:", data.length, "entries found.");
-          setSavedShipments(data);
-        }
+        fetchShipmentsForUser(activeUser.id);
 
         // --- Real-time Subscription Setup ---
         const channel = supabase
@@ -131,16 +125,24 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  const fetchActiveShipments = async () => {
-    if (!user) return;
+  const fetchShipmentsForUser = async (uid: string) => {
     const { data, error } = await supabase
       .from('shipments')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('user_id', uid)
       .order('created_at', { ascending: false });
 
-    if (error) console.error('Data acquisition failure:', error);
-    else if (data) setSavedShipments(data);
+    if (error) {
+      console.error('Core Ledger Recovery failure:', error);
+    } else if (data) {
+      console.log("Cloud Ledger Recovered:", data.length, "entries found.");
+      setSavedShipments(data);
+    }
+  };
+
+  const fetchActiveShipments = async () => {
+    if (!user) return;
+    fetchShipmentsForUser(user.id);
   };
 
   const handleLogin = (userData: any) => {

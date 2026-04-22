@@ -34,15 +34,34 @@ const FEDEX_ORANGE = '#FF6600';
 const FEDEX_PURPLE = '#4D148C';
 
 export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimisticCreate, userId }: TheForgeProps) {
-  const [formData, setFormData] = useState({
-    recipientName: '',
-    destinationAddress: '',
-    originCityState: '',
-    assetValue: '',
-    serviceFee: '',
-    timeOfEntry: new Date().toISOString().slice(0, 16),
-    estimatedDeliveryDate: '',
+  const [formData, setFormData] = useState(() => {
+    const saved = localStorage.getItem('forge_form_cache');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        return {
+          ...parsed,
+          timeOfEntry: new Date().toISOString().slice(0, 16) // Always refresh time
+        };
+      } catch (e) {
+        console.error("Cache Recovery Failed:", e);
+      }
+    }
+    return {
+      recipientName: '',
+      destinationAddress: '',
+      originCityState: '',
+      assetValue: '',
+      serviceFee: '',
+      timeOfEntry: new Date().toISOString().slice(0, 16),
+      estimatedDeliveryDate: '',
+    };
   });
+
+  // Percistence Effect
+  React.useEffect(() => {
+    localStorage.setItem('forge_form_cache', JSON.stringify(formData));
+  }, [formData]);
 
   const [successData, setSuccessData] = useState<{ trackingId: string } | null>(null);
   const [copied, setCopied] = useState(false);
@@ -62,21 +81,8 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     setIsInitializing(true);
     setError(null);
     
-    // --- SESSION CHECK-FIRST PROTOCOL ---
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
-      console.warn("Session expired or missing. Attempting restoration...");
-      const { data: { user: recoveredUser }, error: recoveryError } = await supabase.auth.getUser();
-      if (recoveryError || !recoveredUser) {
-        setIsInitializing(false);
-        setError("Administrative session expired. Please re-authenticate at the Gateway.");
-        return;
-      }
-    }
-    // ------------------------------------
-
+    // 1. Generate ID and Prep Data (Synchronous)
     const trackingId = generateTrackingId();
-    
     const firstHistoryEntry: ShipmentHistoryItem = {
       status_name: 'Shipping label created',
       location: 'Origin Facility',
@@ -84,7 +90,6 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       description: 'Initial logistics protocol established. Tracking node active.',
     };
 
-    // Protocol: Gather ALL form data for the Supabase INSERT.
     const dbPayload = {
       id: trackingId,
       user_id: userId,
@@ -95,7 +100,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       service_fee: parseFloat(formData.serviceFee) || 0,
       estimated_delivery_date: formData.estimatedDeliveryDate,
       status: 'Shipping label created' as ShipmentStatus,
-      created_at: new Date().toISOString(),
+      created_at: formData.timeOfEntry ? new Date(formData.timeOfEntry).toISOString() : new Date().toISOString(),
       history: [firstHistoryEntry],
     };
 
@@ -103,31 +108,31 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       ...dbPayload
     };
 
-    // --- IMMEDIATE REVEAL PROTOCOL ---
-    // We reveal the ID immediately as requested, starting the background sync
+    // 2. IMMEDIATE REVEAL (Zero Delay)
     setSuccessData({ trackingId });
     onOptimisticCreate(newShipment);
     onShipmentCreated();
-    // ---------------------------------
-
-    // CLOUD SAVE PROTOCOL (Asynchronous Synchronization)
-    try {
-      console.log("Preparing Supabase Save Logic...");
-      const response = await supabase
-        .from('shipments')
-        .insert([dbPayload])
-        .select(); 
-      
-      if (response.error) {
-        console.error('Supabase Rejection Error:', response.error);
-        throw new Error(`Cloud rejection: ${response.error.message}`);
+    
+    // 3. BACKGROUND SYNC (Session check + Insert)
+    // We do NOT await this before showing the success screen
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+          const { data: { user: recoveredUser }, error: recoveryError } = await supabase.auth.getUser();
+          if (recoveryError || !recoveredUser) {
+            console.error("Delayed Sync: No session found.");
+            return;
+          }
+        }
+        
+        await supabase.from('shipments').insert([dbPayload]);
+      } catch (err) {
+        console.error('Background Persistence failure:', err);
+      } finally {
+        setIsInitializing(false);
       }
-    } catch (err: any) {
-      console.error('Critical Cloud Persistence failure:', err);
-      setError(`Database Sync Failed: ${err.message || 'Check your connection.'}`);
-    } finally {
-      setIsInitializing(false);
-    }
+    })();
   };
 
   const handleCopy = () => {
@@ -148,6 +153,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       timeOfEntry: new Date().toISOString().slice(0, 16),
       estimatedDeliveryDate: '',
     });
+    localStorage.removeItem('forge_form_cache');
     setSuccessData(null);
     onClose();
   };

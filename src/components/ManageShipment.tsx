@@ -47,10 +47,22 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
   const [isSaving, setIsSaving] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
 
+  // Editable Core Details
+  const [recipient, setRecipient] = useState(shipment?.recipient_name || '');
+  const [address, setAddress] = useState(shipment?.destination_address || '');
+  const [origin, setOrigin] = useState(shipment?.origin_city_state || '');
+  const [valuation, setValuation] = useState(shipment?.asset_value.toString() || '0');
+  const [isEditingDocs, setIsEditingDocs] = useState(false);
+  const [isSavingDocs, setIsSavingDocs] = useState(false);
+
   // Sync state with selected shipment
   React.useEffect(() => {
     if (shipment) {
       setNewStatus(shipment.status);
+      setRecipient(shipment.recipient_name);
+      setAddress(shipment.destination_address);
+      setOrigin(shipment.origin_city_state);
+      setValuation(shipment.asset_value.toString());
     }
   }, [shipment]);
 
@@ -59,6 +71,49 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
   };
 
   if (!shipment) return null;
+
+  const handleUpdateCoreDetails = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingDocs(true);
+
+    try {
+      // --- SESSION CHECK-FIRST PROTOCOL ---
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        const { data: { user: recoveredUser }, error: recoveryError } = await supabase.auth.getUser();
+        if (recoveryError || !recoveredUser) throw new Error('Administrative link broken.');
+      }
+      // ------------------------------------
+
+      const { error: updateError } = await supabase
+        .from('shipments')
+        .update({
+          recipient_name: recipient,
+          destination_address: address,
+          origin_city_state: origin,
+          asset_value: parseFloat(valuation) || 0
+        })
+        .eq('id', shipment.id)
+        .eq('user_id', userId);
+
+      if (updateError) throw updateError;
+
+      const updatedShipment = {
+        ...shipment,
+        recipient_name: recipient,
+        destination_address: address,
+        origin_city_state: origin,
+        asset_value: parseFloat(valuation) || 0
+      };
+
+      onUpdate(updatedShipment);
+      setIsEditingDocs(false);
+    } catch (err: any) {
+      console.error('Core Metadata Update Failure:', err);
+    } finally {
+      setIsSavingDocs(false);
+    }
+  };
 
   const handleUpdateStatus = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -211,25 +266,91 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
               </form>
             </section>
 
-            <section className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm">
-              <h4 className="text-slate-900 font-black text-[10px] uppercase tracking-[0.3em] mb-6 flex items-center gap-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-fedex-purple" />
-                Packet Metadata
-              </h4>
-              <div className="space-y-4">
-                <div className="flex justify-between items-center py-2 border-b border-slate-50">
-                  <span className="text-slate-400 text-[9px] font-black uppercase tracking-widest">Recipient</span>
-                  <span className="text-slate-900 text-xs font-black uppercase">{shipment.recipient_name}</span>
-                </div>
-                <div className="flex justify-between items-center py-2 border-b border-slate-50">
-                  <span className="text-slate-400 text-[9px] font-black uppercase tracking-widest">Destination</span>
-                  <span className="text-slate-900 text-[10px] font-black uppercase text-right max-w-[150px] leading-tight text-slate-300 italic">{shipment.destination_address || 'Unspecified Origin/Dest'}</span>
-                </div>
-                <div className="flex justify-between items-center py-2">
-                  <span className="text-slate-400 text-[9px] font-black uppercase tracking-widest">Valuation</span>
-                  <span className="text-slate-900 text-xs font-black font-mono tracking-tighter">${shipment.asset_value.toLocaleString()}</span>
-                </div>
+            <section className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm relative overflow-hidden">
+              <div className="flex justify-between items-center mb-6">
+                <h4 className="text-slate-900 font-black text-[10px] uppercase tracking-[0.3em] flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-fedex-purple" />
+                  Packet Metadata
+                </h4>
+                <button 
+                  onClick={() => setIsEditingDocs(!isEditingDocs)}
+                  className="text-[9px] font-black uppercase tracking-widest text-fedex-purple hover:underline"
+                >
+                  {isEditingDocs ? 'Cancel Edit' : 'Edit Details'}
+                </button>
               </div>
+
+              {isEditingDocs ? (
+                <form onSubmit={handleUpdateCoreDetails} className="space-y-6">
+                  <div className="space-y-2">
+                    <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Recipient Name</label>
+                    <input 
+                      type="text"
+                      value={recipient}
+                      onChange={(e) => setRecipient(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-purple transition-all text-sm font-bold text-slate-900"
+                      style={{ fontSize: '16px' }}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Destination Address</label>
+                    <textarea 
+                      value={address}
+                      onChange={(e) => setAddress(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-purple transition-all text-sm font-bold text-slate-900 min-h-[60px] resize-none"
+                      style={{ fontSize: '16px' }}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Origin City/State</label>
+                    <input 
+                      type="text"
+                      value={origin}
+                      onChange={(e) => setOrigin(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-purple transition-all text-sm font-bold text-slate-900"
+                      style={{ fontSize: '16px' }}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Valuation ($)</label>
+                    <input 
+                      type="number"
+                      step="0.01"
+                      value={valuation}
+                      onChange={(e) => setValuation(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-purple transition-all text-sm font-bold text-slate-900 font-mono"
+                      style={{ fontSize: '16px' }}
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={isSavingDocs}
+                    className="w-full bg-fedex-purple text-white font-black py-4 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-[9px] disabled:opacity-50"
+                  >
+                    {isSavingDocs ? <Activity className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                    Overwrite Logic Node
+                  </button>
+                </form>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex justify-between items-center py-2 border-b border-slate-50">
+                    <span className="text-slate-400 text-[9px] font-black uppercase tracking-widest">Recipient</span>
+                    <span className="text-slate-900 text-xs font-black uppercase">{shipment.recipient_name}</span>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b border-slate-50">
+                    <span className="text-slate-400 text-[9px] font-black uppercase tracking-widest">Destination</span>
+                    <span className="text-slate-900 text-[10px] font-black uppercase text-right max-w-[150px] leading-tight italic text-slate-500">{shipment.destination_address || 'Unspecified Dest'}</span>
+                  </div>
+                  <div className="flex justify-between items-center py-2 border-b border-slate-50">
+                    <span className="text-slate-400 text-[9px] font-black uppercase tracking-widest">Origin</span>
+                    <span className="text-slate-900 text-[10px] font-black uppercase text-right">{shipment.origin_city_state || 'Unspecified Origin'}</span>
+                  </div>
+                  <div className="flex justify-between items-center py-2">
+                    <span className="text-slate-400 text-[9px] font-black uppercase tracking-widest">Valuation</span>
+                    <span className="text-slate-900 text-xs font-black font-mono tracking-tighter">${shipment.asset_value.toLocaleString()}</span>
+                  </div>
+                </div>
+              )}
             </section>
           </div>
 

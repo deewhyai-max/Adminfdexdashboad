@@ -104,13 +104,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       ...dbPayload
     };
 
-    // --- CRITICAL: IMMEDIATE UI ACTION ---
-    setSuccessData({ trackingId });
-    onOptimisticCreate(newShipment);
-    onShipmentCreated();
-    // ------------------------------------
-
-    // CLOUD SAVE PROTOCOL (Awaited with Diagnostics)
+    // --- CRITICAL: CLOUD SAVE PROTOCOL ---
     try {
       console.log("Preparing Supabase Save Logic...");
       console.log("Saving to Supabase:", dbPayload);
@@ -128,14 +122,19 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       }
       
       if (!response.data || response.data.length === 0) {
-        console.warn('Insertion logic succeeded but no data returned from cloud.');
+        throw new Error('Insertion logic succeeded but no synchronization acknowledgement received.');
       }
+
+      // ONLY reveal success data after confirmed cloud sync
+      setSuccessData({ trackingId });
+      onOptimisticCreate(newShipment);
+      onShipmentCreated();
       
     } catch (err: any) {
       console.error('Critical Cloud Persistence failure:', err);
       setError(`Database Sync Failed: ${err.message || 'Check your connection or table schema.'}`);
     } finally {
-      setIsInitializing(false); // Task marked complete after Database push attempt
+      setIsInitializing(false);
     }
   };
 

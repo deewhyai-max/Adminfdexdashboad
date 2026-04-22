@@ -32,15 +32,26 @@ export default function AuthGateway({ onLogin }: AuthGatewayProps) {
           email,
           password,
         });
-        if (loginError) throw loginError;
+        if (loginError) {
+          if (loginError.message === 'Invalid login credentials') {
+            throw new Error('Wrong credentials. Please verify your identifier and cipher.');
+          }
+          throw loginError;
+        }
         if (data.user) onLogin(data.user);
       } else {
-        const { error: signUpError } = await supabase.auth.signUp({
+        const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
           email,
           password,
         });
         if (signUpError) throw signUpError;
-        setMsg('Profile initialized. Proceed to gateway access.');
+        
+        // Ensure manual login by signing out if Supabase auto-logged them in
+        if (signUpData.session) {
+          await supabase.auth.signOut();
+        }
+
+        setMsg('Node registration successful. You must now sign in to establish a link.');
         setIsLogin(true);
         setPassword('');
       }

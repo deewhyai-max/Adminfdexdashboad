@@ -44,6 +44,7 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
   const [newStatus, setNewStatus] = useState<ShipmentStatus>(shipment?.status || 'Pending');
   const [location, setLocation] = useState('');
   const [description, setDescription] = useState('');
+  const [updateTime, setUpdateTime] = useState(new Date().toISOString().slice(0, 16));
   const [isSaving, setIsSaving] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
 
@@ -70,6 +71,7 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
       setFee(shipment.service_fee.toString());
       setEntryTime(shipment.created_at ? new Date(shipment.created_at).toISOString().slice(0, 16) : '');
       setDeliveryDate(shipment.estimated_delivery_date || '');
+      setUpdateTime(new Date().toISOString().slice(0, 16));
     }
   }, [shipment]);
 
@@ -130,7 +132,7 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
     setShowSuccess(false);
 
     const newHistoryItem = {
-      timestamp: new Date().toISOString(),
+      timestamp: updateTime ? new Date(updateTime).toISOString() : new Date().toISOString(),
       status_name: newStatus,
       location: location || 'Transit Node',
       description: description || `Operational status shifted to ${newStatus}`,
@@ -170,6 +172,7 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
       setTimeout(() => setShowSuccess(false), 2000);
       setLocation('');
       setDescription('');
+      setUpdateTime(new Date().toISOString().slice(0, 16));
     } catch (err: any) {
       console.error('Core Logic Update Failure:', err);
     } finally {
@@ -223,6 +226,17 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                       <ChevronRight className="w-4 h-4 text-slate-400 rotate-90" />
                     </div>
                   </div>
+                </div>
+
+                <div className="space-y-3">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block pl-1">Status Event Time</label>
+                  <input 
+                    type="datetime-local"
+                    value={updateTime}
+                    onChange={(e) => setUpdateTime(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 outline-none focus:ring-4 focus:ring-fedex-purple/5 focus:border-fedex-purple transition-all text-base font-bold text-slate-900 shadow-sm"
+                    style={{ fontSize: '16px' }}
+                  />
                 </div>
 
                 <div className="space-y-3">

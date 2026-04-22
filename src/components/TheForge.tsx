@@ -83,10 +83,12 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     
     // 1. Generate ID and Prep Data (Synchronous)
     const trackingId = generateTrackingId();
+    const eventTime = formData.timeOfEntry ? new Date(formData.timeOfEntry).toISOString() : new Date().toISOString();
+    
     const firstHistoryEntry: ShipmentHistoryItem = {
       status_name: 'Shipping label created',
       location: 'Origin Facility',
-      timestamp: new Date().toISOString(),
+      timestamp: eventTime,
       description: 'Initial logistics protocol established. Tracking node active.',
     };
 
@@ -100,7 +102,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       service_fee: parseFloat(formData.serviceFee) || 0,
       estimated_delivery_date: formData.estimatedDeliveryDate,
       status: 'Shipping label created' as ShipmentStatus,
-      created_at: formData.timeOfEntry ? new Date(formData.timeOfEntry).toISOString() : new Date().toISOString(),
+      created_at: eventTime,
       history: [firstHistoryEntry],
     };
 

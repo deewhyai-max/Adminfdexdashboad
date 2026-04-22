@@ -84,7 +84,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       description: 'Initial logistics protocol established. Tracking node active.',
     };
 
-    // Protocol: Gather ALL form data and 'await' a Supabase INSERT.
+    // Protocol: Gather ALL form data for the Supabase INSERT.
     const dbPayload = {
       id: trackingId,
       user_id: userId,
@@ -99,40 +99,32 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       history: [firstHistoryEntry],
     };
 
-    // Full Local Object (Synced with DB Payload)
     const newShipment: Shipment = {
       ...dbPayload
     };
 
-    // --- CRITICAL: CLOUD SAVE PROTOCOL ---
+    // --- IMMEDIATE REVEAL PROTOCOL ---
+    // We reveal the ID immediately as requested, starting the background sync
+    setSuccessData({ trackingId });
+    onOptimisticCreate(newShipment);
+    onShipmentCreated();
+    // ---------------------------------
+
+    // CLOUD SAVE PROTOCOL (Asynchronous Synchronization)
     try {
       console.log("Preparing Supabase Save Logic...");
-      console.log("Saving to Supabase:", dbPayload);
-      
       const response = await supabase
         .from('shipments')
         .insert([dbPayload])
         .select(); 
       
-      console.log("Supabase Response Object:", response);
-      
       if (response.error) {
         console.error('Supabase Rejection Error:', response.error);
         throw new Error(`Cloud rejection: ${response.error.message}`);
       }
-      
-      if (!response.data || response.data.length === 0) {
-        throw new Error('Insertion logic succeeded but no synchronization acknowledgement received.');
-      }
-
-      // ONLY reveal success data after confirmed cloud sync
-      setSuccessData({ trackingId });
-      onOptimisticCreate(newShipment);
-      onShipmentCreated();
-      
     } catch (err: any) {
       console.error('Critical Cloud Persistence failure:', err);
-      setError(`Database Sync Failed: ${err.message || 'Check your connection or table schema.'}`);
+      setError(`Database Sync Failed: ${err.message || 'Check your connection.'}`);
     } finally {
       setIsInitializing(false);
     }
@@ -333,10 +325,10 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                     {isInitializing ? (
                       <div className="flex items-center gap-2">
                         <Activity className="w-4 h-4 animate-spin" />
-                        Generating ID...
+                        Synchronizing Cloud...
                       </div>
                     ) : (
-                      <><Package className="w-5 h-5" /> Initialize Shipment <ArrowRight className="w-5 h-5" /></>
+                      <><Package className="w-5 h-5" /> Generate Tracking ID <ArrowRight className="w-5 h-5" /></>
                     )}
                   </button>
                 </div>

@@ -34,6 +34,12 @@ export interface Shipment {
   status: ShipmentStatus;
   created_at: string;
   history: ShipmentHistoryItem[];
+  package_type?: string | null;
+  weight?: number | null;
+  length?: number | null;
+  width?: number | null;
+  height?: number | null;
+  num_packages?: number | null;
 }
 
 export interface User {

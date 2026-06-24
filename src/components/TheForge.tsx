@@ -40,6 +40,13 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       try {
         const parsed = JSON.parse(saved);
         return {
+          valuationMode: 'asset',
+          packageType: 'Box',
+          weight: '',
+          length: '',
+          width: '',
+          height: '',
+          numPackages: '1',
           ...parsed,
           timeOfEntry: new Date().toISOString().slice(0, 16) // Always refresh time
         };
@@ -55,6 +62,13 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       serviceFee: '',
       timeOfEntry: new Date().toISOString().slice(0, 16),
       estimatedDeliveryDate: '',
+      valuationMode: 'asset',
+      packageType: 'Box',
+      weight: '',
+      length: '',
+      width: '',
+      height: '',
+      numPackages: '1',
     };
   });
 
@@ -92,18 +106,26 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       description: 'Initial logistics protocol established. Tracking node active.',
     };
 
+    const isAssetMode = formData.valuationMode === 'asset';
+
     const dbPayload = {
       id: trackingId,
       user_id: userId,
       recipient_name: formData.recipientName,
       destination_address: formData.destinationAddress,
       origin_city_state: formData.originCityState,
-      asset_value: parseFloat(formData.assetValue) || 0,
+      asset_value: isAssetMode ? (parseFloat(formData.assetValue) || 0) : 0,
       service_fee: parseFloat(formData.serviceFee) || 0,
       estimated_delivery_date: formData.estimatedDeliveryDate,
       status: 'Shipping label created' as ShipmentStatus,
       created_at: eventTime,
       history: [firstHistoryEntry],
+      package_type: isAssetMode ? null : (formData.packageType || 'Box'),
+      weight: isAssetMode ? null : (parseFloat(formData.weight) || null),
+      length: isAssetMode ? null : (parseFloat(formData.length) || null),
+      width: isAssetMode ? null : (parseFloat(formData.width) || null),
+      height: isAssetMode ? null : (parseFloat(formData.height) || null),
+      num_packages: isAssetMode ? null : (parseInt(formData.numPackages) || null),
     };
 
     const newShipment: Shipment = {
@@ -154,6 +176,13 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       serviceFee: '',
       timeOfEntry: new Date().toISOString().slice(0, 16),
       estimatedDeliveryDate: '',
+      valuationMode: 'asset',
+      packageType: 'Box',
+      weight: '',
+      length: '',
+      width: '',
+      height: '',
+      numPackages: '1',
     });
     localStorage.removeItem('forge_form_cache');
     setSuccessData(null);
@@ -257,40 +286,172 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                     />
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                    {/* Asset Value */}
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                        <DollarSign className="w-3 h-3" /> Asset Value
-                      </label>
-                      <input
-                        required
-                        type="number"
-                        step="0.01"
-                        value={formData.assetValue}
-                        onChange={(e) => setFormData({ ...formData, assetValue: e.target.value })}
-                        className="w-full border-b-2 border-slate-100 py-4 focus:border-fedex-orange outline-none transition-colors text-slate-900 font-medium text-base md:text-lg lg:text-base"
-                        placeholder="0.00"
-                        style={{ fontSize: '16px' }}
-                      />
-                    </div>
-                    {/* Service Fee */}
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                        <DollarSign className="w-3 h-3" /> Service Fee
-                      </label>
-                      <input
-                        required
-                        type="number"
-                        step="0.01"
-                        value={formData.serviceFee}
-                        onChange={(e) => setFormData({ ...formData, serviceFee: e.target.value })}
-                        className="w-full border-b-2 border-slate-100 py-4 focus:border-fedex-orange outline-none transition-colors text-slate-900 font-medium text-base md:text-lg lg:text-base"
-                        placeholder="0.00"
-                        style={{ fontSize: '16px' }}
-                      />
+                  {/* Cargo Mode Selector */}
+                  <div className="space-y-3">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                      <Package className="w-3 h-3" /> Cargo Mode Selection
+                    </label>
+                    <div className="flex bg-slate-100 p-1 rounded-xl">
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, valuationMode: 'asset' })}
+                        className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${
+                          formData.valuationMode === 'asset'
+                            ? 'bg-white text-slate-900 shadow-sm'
+                            : 'text-slate-500 hover:text-slate-950'
+                        }`}
+                      >
+                        Asset Value
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, valuationMode: 'package' })}
+                        className={`flex-1 py-3 text-xs font-bold uppercase tracking-wider rounded-lg transition-all ${
+                          formData.valuationMode === 'package'
+                            ? 'bg-white text-slate-900 shadow-sm'
+                            : 'text-slate-500 hover:text-slate-950'
+                        }`}
+                      >
+                        Package Details
+                      </button>
                     </div>
                   </div>
+
+                  {formData.valuationMode === 'asset' ? (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                      {/* Asset Value */}
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                          <DollarSign className="w-3 h-3" /> Asset Value
+                        </label>
+                        <input
+                          required={formData.valuationMode === 'asset'}
+                          type="number"
+                          step="0.01"
+                          value={formData.assetValue}
+                          onChange={(e) => setFormData({ ...formData, assetValue: e.target.value })}
+                          className="w-full border-b-2 border-slate-100 py-4 focus:border-fedex-orange outline-none transition-colors text-slate-900 font-medium text-base md:text-lg lg:text-base"
+                          placeholder="0.00"
+                          style={{ fontSize: '16px' }}
+                        />
+                      </div>
+                      {/* Service Fee */}
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                          <DollarSign className="w-3 h-3" /> Service Fee
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={formData.serviceFee}
+                          onChange={(e) => setFormData({ ...formData, serviceFee: e.target.value })}
+                          className="w-full border-b-2 border-slate-100 py-4 focus:border-fedex-orange outline-none transition-colors text-slate-900 font-medium text-base md:text-lg lg:text-base"
+                          placeholder="0.00"
+                          style={{ fontSize: '16px' }}
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-6">
+                      <div className="space-y-4 border border-slate-100 p-5 rounded-2xl bg-slate-50/50">
+                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Package Specifications</h4>
+                        
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          {/* Package Type */}
+                          <div className="space-y-2">
+                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Package Type</label>
+                            <select
+                              value={formData.packageType || 'Box'}
+                              onChange={(e) => setFormData({ ...formData, packageType: e.target.value })}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-sm"
+                            >
+                              <option value="Envelope">Envelope</option>
+                              <option value="Pak">Pak</option>
+                              <option value="Box">Box</option>
+                              <option value="Tube">Tube</option>
+                              <option value="Your Packaging">Your Packaging</option>
+                            </select>
+                          </div>
+
+                          {/* Number of Packages */}
+                          <div className="space-y-2">
+                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Num. of Packages</label>
+                            <input
+                              required={formData.valuationMode === 'package'}
+                              type="number"
+                              min="1"
+                              value={formData.numPackages || '1'}
+                              onChange={(e) => setFormData({ ...formData, numPackages: e.target.value })}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-sm"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          {/* Weight */}
+                          <div className="space-y-2">
+                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Weight (lbs)</label>
+                            <input
+                              required={formData.valuationMode === 'package'}
+                              type="number"
+                              step="0.1"
+                              placeholder="0.0"
+                              value={formData.weight || ''}
+                              onChange={(e) => setFormData({ ...formData, weight: e.target.value })}
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-sm"
+                            />
+                          </div>
+
+                          {/* Dimensions */}
+                          <div className="space-y-2">
+                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Dimensions (L x W x H in.)</label>
+                            <div className="grid grid-cols-3 gap-1">
+                              <input
+                                required={formData.valuationMode === 'package'}
+                                type="number"
+                                placeholder="L"
+                                value={formData.length || ''}
+                                onChange={(e) => setFormData({ ...formData, length: e.target.value })}
+                                className="w-full bg-white border border-slate-200 rounded-xl px-1 py-3 text-center outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-xs"
+                              />
+                              <input
+                                required={formData.valuationMode === 'package'}
+                                type="number"
+                                placeholder="W"
+                                value={formData.width || ''}
+                                onChange={(e) => setFormData({ ...formData, width: e.target.value })}
+                                className="w-full bg-white border border-slate-200 rounded-xl px-1 py-3 text-center outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-xs"
+                              />
+                              <input
+                                required={formData.valuationMode === 'package'}
+                                type="number"
+                                placeholder="H"
+                                value={formData.height || ''}
+                                onChange={(e) => setFormData({ ...formData, height: e.target.value })}
+                                className="w-full bg-white border border-slate-200 rounded-xl px-1 py-3 text-center outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-xs"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Service Fee */}
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                          <DollarSign className="w-3 h-3" /> Service Fee
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={formData.serviceFee}
+                          onChange={(e) => setFormData({ ...formData, serviceFee: e.target.value })}
+                          className="w-full border-b-2 border-slate-100 py-4 focus:border-fedex-orange outline-none transition-colors text-slate-900 font-medium text-base md:text-lg lg:text-base"
+                          placeholder="0.00"
+                          style={{ fontSize: '16px' }}
+                        />
+                      </div>
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                     {/* Time of Entry */}

@@ -16,7 +16,16 @@ import {
   Clock,
   ArrowRight,
   Activity,
-  ShieldAlert
+  ShieldAlert,
+  Building,
+  Truck,
+  ShieldCheck,
+  AlertTriangle,
+  Snowflake,
+  FileSignature,
+  Scale,
+  Maximize2,
+  Coins
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Shipment, ShipmentStatus, ShipmentHistoryItem } from '../types';
@@ -30,8 +39,47 @@ interface TheForgeProps {
   userId: string;
 }
 
-const FEDEX_ORANGE = '#FF6600';
-const FEDEX_PURPLE = '#4D148C';
+export const CURRENCY_OPTIONS = [
+  { code: 'USD', symbol: '$', label: 'USD ($)' },
+  { code: 'EUR', symbol: '€', label: 'EUR (€)' },
+  { code: 'GBP', symbol: '£', label: 'GBP (£)' },
+  { code: 'CAD', symbol: '$', label: 'CAD ($)' },
+  { code: 'NGN', symbol: '₦', label: 'NGN (₦)' },
+  { code: 'AUD', symbol: '$', label: 'AUD ($)' },
+  { code: 'JPY', symbol: '¥', label: 'JPY (¥)' },
+  { code: 'CHF', symbol: 'Fr', label: 'CHF (Fr)' },
+  { code: 'ZAR', symbol: 'R', label: 'ZAR (R)' },
+  { code: 'AED', symbol: 'AED', label: 'AED (د.إ)' },
+  { code: 'CNY', symbol: '¥', label: 'CNY (¥)' },
+];
+
+export const SERVICE_TYPE_OPTIONS = [
+  'FedEx Priority Overnight',
+  'FedEx Standard Overnight',
+  'FedEx 2Day',
+  'FedEx Ground',
+  'FedEx Express Saver',
+  'FedEx First Overnight',
+  'FedEx International Priority',
+  'FedEx International Economy',
+  'FedEx International First',
+  'FedEx Home Delivery',
+];
+
+export const PACKAGE_TYPE_OPTIONS = [
+  'FedEx Envelope',
+  'FedEx Pak',
+  'FedEx Box (Small/Medium/Large)',
+  'FedEx Tube',
+  'Your Packaging (custom box)',
+];
+
+export const SIGNATURE_OPTIONS = [
+  'None',
+  'Direct',
+  'Indirect',
+  'Adult',
+];
 
 export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimisticCreate, userId }: TheForgeProps) {
   const [formData, setFormData] = useState(() => {
@@ -40,13 +88,30 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       try {
         const parsed = JSON.parse(saved);
         return {
-          valuationMode: 'asset',
-          packageType: 'Box',
+          senderName: '',
+          senderAddress: '',
+          recipientName: '',
+          destinationAddress: '',
+          originCityState: '',
+          currency: 'USD',
+          serviceType: 'FedEx Priority Overnight',
+          valuationMode: 'asset' as 'asset' | 'package',
+          assetValue: '',
+          serviceFee: '',
+          packageType: 'FedEx Box (Small/Medium/Large)',
           weight: '',
+          weightUnit: 'lbs' as 'lbs' | 'kg',
           length: '',
           width: '',
           height: '',
+          dimensionUnit: 'in' as 'in' | 'cm',
           numPackages: '1',
+          declaredValue: '',
+          isDryIce: false,
+          isHazardous: false,
+          isSaturdayDelivery: false,
+          signatureOption: 'None',
+          isHoldAtLocation: false,
           ...parsed,
           timeOfEntry: new Date().toISOString().slice(0, 16) // Always refresh time
         };
@@ -55,24 +120,36 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       }
     }
     return {
+      senderName: '',
+      senderAddress: '',
       recipientName: '',
       destinationAddress: '',
       originCityState: '',
+      currency: 'USD',
+      serviceType: 'FedEx Priority Overnight',
+      valuationMode: 'asset' as 'asset' | 'package',
       assetValue: '',
       serviceFee: '',
-      timeOfEntry: new Date().toISOString().slice(0, 16),
-      estimatedDeliveryDate: '',
-      valuationMode: 'asset',
-      packageType: 'Box',
+      packageType: 'FedEx Box (Small/Medium/Large)',
       weight: '',
+      weightUnit: 'lbs' as 'lbs' | 'kg',
       length: '',
       width: '',
       height: '',
+      dimensionUnit: 'in' as 'in' | 'cm',
       numPackages: '1',
+      declaredValue: '',
+      isDryIce: false,
+      isHazardous: false,
+      isSaturdayDelivery: false,
+      signatureOption: 'None',
+      isHoldAtLocation: false,
+      timeOfEntry: new Date().toISOString().slice(0, 16),
+      estimatedDeliveryDate: '',
     };
   });
 
-  // Percistence Effect
+  // Persistence Effect
   React.useEffect(() => {
     localStorage.setItem('forge_form_cache', JSON.stringify(formData));
   }, [formData]);
@@ -90,6 +167,9 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     return id.replace(/(\d{4})(\d{4})(\d{4})/, '$1 $2 $3');
   };
 
+  const selectedCurrency = CURRENCY_OPTIONS.find(c => c.code === formData.currency) || CURRENCY_OPTIONS[0];
+  const currencySymbol = selectedCurrency.symbol;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsInitializing(true);
@@ -101,31 +181,44 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     
     const firstHistoryEntry: ShipmentHistoryItem = {
       status_name: 'Shipping label created',
-      location: 'Origin Facility',
+      location: formData.senderAddress || formData.originCityState || 'Origin Facility',
       timestamp: eventTime,
       description: 'Initial logistics protocol established. Tracking node active.',
     };
 
     const isAssetMode = formData.valuationMode === 'asset';
+    const effectiveOrigin = formData.senderAddress || formData.originCityState || formData.senderName || 'Unspecified';
 
     const dbPayload = {
       id: trackingId,
       user_id: userId,
-      recipient_name: formData.recipientName,
-      destination_address: formData.destinationAddress,
-      origin_city_state: formData.originCityState,
+      sender_name: formData.senderName ? formData.senderName.trim() : null,
+      sender_address: formData.senderAddress ? formData.senderAddress.trim() : null,
+      recipient_name: formData.recipientName ? formData.recipientName.trim() : 'Unspecified',
+      destination_address: formData.destinationAddress ? formData.destinationAddress.trim() : 'Unspecified',
+      origin_city_state: effectiveOrigin,
+      currency: formData.currency || 'USD',
+      service_type: formData.serviceType || 'FedEx Priority Overnight',
       asset_value: isAssetMode ? (parseFloat(formData.assetValue) || 0) : 0,
       service_fee: parseFloat(formData.serviceFee) || 0,
-      estimated_delivery_date: formData.estimatedDeliveryDate,
+      estimated_delivery_date: formData.estimatedDeliveryDate || null,
       status: 'Shipping label created' as ShipmentStatus,
       created_at: eventTime,
       history: [firstHistoryEntry],
-      package_type: isAssetMode ? null : (formData.packageType || 'Box'),
-      weight: isAssetMode ? null : (parseFloat(formData.weight) || null),
-      length: isAssetMode ? null : (parseFloat(formData.length) || null),
-      width: isAssetMode ? null : (parseFloat(formData.width) || null),
-      height: isAssetMode ? null : (parseFloat(formData.height) || null),
-      num_packages: isAssetMode ? null : (parseInt(formData.numPackages) || null),
+      package_type: isAssetMode ? null : (formData.packageType || 'FedEx Box (Small/Medium/Large)'),
+      weight: isAssetMode ? 0 : (parseFloat(formData.weight) || 0),
+      weight_unit: isAssetMode ? null : (formData.weightUnit || 'lbs'),
+      length: isAssetMode ? 0 : (parseFloat(formData.length) || 0),
+      width: isAssetMode ? 0 : (parseFloat(formData.width) || 0),
+      height: isAssetMode ? 0 : (parseFloat(formData.height) || 0),
+      dimension_unit: isAssetMode ? null : (formData.dimensionUnit || 'in'),
+      num_packages: isAssetMode ? 0 : (parseInt(formData.numPackages) || 1),
+      declared_value: isAssetMode ? 0 : (parseFloat(formData.declaredValue) || 0),
+      is_dry_ice: Boolean(formData.isDryIce),
+      is_hazardous: Boolean(formData.isHazardous),
+      is_saturday_delivery: Boolean(formData.isSaturdayDelivery),
+      signature_option: formData.signatureOption || 'None',
+      is_hold_at_location: Boolean(formData.isHoldAtLocation),
     };
 
     const newShipment: Shipment = {
@@ -137,8 +230,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     onOptimisticCreate(newShipment);
     onShipmentCreated();
     
-    // 3. BACKGROUND SYNC (Session check + Insert)
-    // We do NOT await this before showing the success screen
+    // 3. BACKGROUND SYNC (Session check + Insert with Schema Graceful Fallback)
     (async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession();
@@ -150,7 +242,33 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
           }
         }
         
-        await supabase.from('shipments').insert([dbPayload]);
+        const { error: insertError } = await supabase.from('shipments').insert([dbPayload]);
+        if (insertError) {
+          console.warn('Initial insert warning, checking if migration fallback needed:', insertError.message);
+          // If table columns have not been migrated yet, safely fallback to core schema fields
+          if (insertError.message && (insertError.message.includes('column') || insertError.code === 'PGRST204')) {
+            const fallbackPayload = {
+              id: trackingId,
+              user_id: userId,
+              recipient_name: dbPayload.recipient_name,
+              destination_address: dbPayload.destination_address,
+              origin_city_state: dbPayload.origin_city_state,
+              asset_value: dbPayload.asset_value,
+              service_fee: dbPayload.service_fee,
+              estimated_delivery_date: dbPayload.estimated_delivery_date,
+              status: dbPayload.status,
+              created_at: dbPayload.created_at,
+              history: dbPayload.history,
+              package_type: dbPayload.package_type,
+              weight: dbPayload.weight,
+              length: dbPayload.length,
+              width: dbPayload.width,
+              height: dbPayload.height,
+              num_packages: dbPayload.num_packages,
+            };
+            await supabase.from('shipments').insert([fallbackPayload]);
+          }
+        }
       } catch (err) {
         console.error('Background Persistence failure:', err);
       } finally {
@@ -169,20 +287,32 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
 
   const handleResetAndClose = () => {
     setFormData({
+      senderName: '',
+      senderAddress: '',
       recipientName: '',
       destinationAddress: '',
       originCityState: '',
+      currency: 'USD',
+      serviceType: 'FedEx Priority Overnight',
+      valuationMode: 'asset',
       assetValue: '',
       serviceFee: '',
-      timeOfEntry: new Date().toISOString().slice(0, 16),
-      estimatedDeliveryDate: '',
-      valuationMode: 'asset',
-      packageType: 'Box',
+      packageType: 'FedEx Box (Small/Medium/Large)',
       weight: '',
+      weightUnit: 'lbs',
       length: '',
       width: '',
       height: '',
+      dimensionUnit: 'in',
       numPackages: '1',
+      declaredValue: '',
+      isDryIce: false,
+      isHazardous: false,
+      isSaturdayDelivery: false,
+      signatureOption: 'None',
+      isHoldAtLocation: false,
+      timeOfEntry: new Date().toISOString().slice(0, 16),
+      estimatedDeliveryDate: '',
     });
     localStorage.removeItem('forge_form_cache');
     setSuccessData(null);
@@ -229,7 +359,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
             </div>
 
             {/* Form */}
-            <div className="flex-1 overflow-y-auto p-8 relative">
+            <div className="flex-1 overflow-y-auto p-6 md:p-8 relative">
               <form onSubmit={handleSubmit} className="space-y-6">
                 {error && (
                   <div className="bg-red-50 border border-red-200 text-red-600 p-4 rounded-xl text-[10px] font-bold uppercase tracking-widest flex items-center gap-2">
@@ -237,59 +367,128 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                     {error}
                   </div>
                 )}
+                
                 <div className="grid grid-cols-1 gap-6">
-                  {/* Recipient */}
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                      <User className="w-3 h-3" /> Recipient Name
-                    </label>
-                    <input
-                      required
-                      type="text"
-                      value={formData.recipientName}
-                      onChange={(e) => setFormData({ ...formData, recipientName: e.target.value })}
-                      className="w-full border-b-2 border-slate-100 py-4 focus:border-fedex-orange outline-none transition-colors text-slate-900 font-medium text-base md:text-lg lg:text-base"
-                      placeholder="e.g. John Doe"
-                      style={{ fontSize: '16px' }}
-                    />
+
+                  {/* 1. Service Type & Currency Header Section */}
+                  <div className="space-y-4 bg-slate-50/70 border border-slate-200/80 rounded-2xl p-5">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      {/* Service Type */}
+                      <div className="flex-1 space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                          <Truck className="w-3.5 h-3.5 text-fedex-purple" /> Service Type
+                        </label>
+                        <select
+                          value={formData.serviceType}
+                          onChange={(e) => setFormData({ ...formData, serviceType: e.target.value })}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-bold text-xs"
+                        >
+                          {SERVICE_TYPE_OPTIONS.map((st) => (
+                            <option key={st} value={st}>{st}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Currency Dropdown Selector */}
+                      <div className="space-y-1.5 sm:w-44">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                          <Coins className="w-3.5 h-3.5 text-fedex-orange" /> Currency
+                        </label>
+                        <select
+                          value={formData.currency}
+                          onChange={(e) => setFormData({ ...formData, currency: e.target.value })}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-black text-xs"
+                        >
+                          {CURRENCY_OPTIONS.map((curr) => (
+                            <option key={curr.code} value={curr.code}>
+                              {curr.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
                   </div>
 
-                  {/* Address */}
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                      <MapPin className="w-3 h-3" /> Destination Address
-                    </label>
-                    <input
-                      required
-                      type="text"
-                      value={formData.destinationAddress}
-                      onChange={(e) => setFormData({ ...formData, destinationAddress: e.target.value })}
-                      className="w-full border-b-2 border-slate-100 py-4 focus:border-fedex-orange outline-none transition-colors text-slate-900 font-medium text-base md:text-lg lg:text-base"
-                      placeholder="Full street address, City, State, Zip"
-                      style={{ fontSize: '16px' }}
-                    />
+                  {/* 2. Sender Details (Origin Hub) */}
+                  <div className="space-y-4 border border-slate-100 p-5 rounded-2xl bg-slate-50/40">
+                    <div className="flex items-center gap-2">
+                      <Building className="w-3.5 h-3.5 text-fedex-purple" />
+                      <h4 className="text-[10px] font-black text-slate-700 uppercase tracking-[0.2em]">Sender Details (Origin)</h4>
+                    </div>
+                    
+                    <div className="space-y-3">
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">
+                          Sender Name / Company
+                        </label>
+                        <input
+                          type="text"
+                          value={formData.senderName}
+                          onChange={(e) => setFormData({ ...formData, senderName: e.target.value, originCityState: e.target.value })}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-sm"
+                          placeholder="e.g. FedEx Global Express Hub / John Enterprise"
+                          style={{ fontSize: '16px' }}
+                        />
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                          <MapPin className="w-3 h-3 text-slate-400" /> Sender Address
+                        </label>
+                        <input
+                          type="text"
+                          value={formData.senderAddress}
+                          onChange={(e) => setFormData({ ...formData, senderAddress: e.target.value })}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-sm"
+                          placeholder="Street, City, State, ZIP (e.g. 3610 Hacks Cross Rd, Memphis, TN)"
+                          style={{ fontSize: '16px' }}
+                        />
+                      </div>
+                    </div>
                   </div>
 
-                  {/* Origin */}
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                      <Package className="w-3 h-3" /> Origin City/State
-                    </label>
-                    <input
-                      required
-                      type="text"
-                      value={formData.originCityState}
-                      onChange={(e) => setFormData({ ...formData, originCityState: e.target.value })}
-                      className="w-full border-b-2 border-slate-100 py-4 focus:border-fedex-orange outline-none transition-colors text-slate-900 font-medium text-base md:text-lg lg:text-base"
-                      placeholder="City, ST"
-                      style={{ fontSize: '16px' }}
-                    />
+                  {/* 3. Recipient Details (Destination Point) */}
+                  <div className="space-y-4 border border-slate-100 p-5 rounded-2xl bg-slate-50/40">
+                    <div className="flex items-center gap-2">
+                      <User className="w-3.5 h-3.5 text-fedex-orange" />
+                      <h4 className="text-[10px] font-black text-slate-700 uppercase tracking-[0.2em]">Recipient Details (Destination)</h4>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">
+                          Recipient Name
+                        </label>
+                        <input
+                          type="text"
+                          value={formData.recipientName}
+                          onChange={(e) => setFormData({ ...formData, recipientName: e.target.value })}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-sm"
+                          placeholder="e.g. John Doe"
+                          style={{ fontSize: '16px' }}
+                        />
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                          <MapPin className="w-3 h-3 text-slate-400" /> Destination Address
+                        </label>
+                        <input
+                          type="text"
+                          value={formData.destinationAddress}
+                          onChange={(e) => setFormData({ ...formData, destinationAddress: e.target.value })}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-sm"
+                          placeholder="Full street address, City, State, Zip"
+                          style={{ fontSize: '16px' }}
+                        />
+                      </div>
+                    </div>
                   </div>
 
-                  {/* Cargo Mode Selector */}
+                  {/* 4. Cargo Mode Selector */}
                   <div className="space-y-3">
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                      <Package className="w-3 h-3" /> Cargo Mode Selection
+                      <Package className="w-3 h-3" /> Valuation & Specifications Mode
                     </label>
                     <div className="flex bg-slate-100 p-1 rounded-xl">
                       <button
@@ -312,72 +511,83 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                             : 'text-slate-500 hover:text-slate-950'
                         }`}
                       >
-                        Package Details
+                        Package Specifications
                       </button>
                     </div>
                   </div>
 
+                  {/* 5. Mode Body */}
                   {formData.valuationMode === 'asset' ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 bg-slate-50/50 border border-slate-100 p-5 rounded-2xl">
                       {/* Asset Value */}
                       <div className="space-y-2">
                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                          <DollarSign className="w-3 h-3" /> Asset Value
+                          <DollarSign className="w-3 h-3 text-fedex-orange" /> Asset Value ({formData.currency})
                         </label>
-                        <input
-                          required={formData.valuationMode === 'asset'}
-                          type="number"
-                          step="0.01"
-                          value={formData.assetValue}
-                          onChange={(e) => setFormData({ ...formData, assetValue: e.target.value })}
-                          className="w-full border-b-2 border-slate-100 py-4 focus:border-fedex-orange outline-none transition-colors text-slate-900 font-medium text-base md:text-lg lg:text-base"
-                          placeholder="0.00"
-                          style={{ fontSize: '16px' }}
-                        />
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-sm pointer-events-none">
+                            {currencySymbol}
+                          </span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={formData.assetValue}
+                            onChange={(e) => setFormData({ ...formData, assetValue: e.target.value })}
+                            className="w-full bg-white border border-slate-200 rounded-xl py-3 pl-8 pr-3 focus:border-fedex-orange outline-none transition-colors text-slate-900 font-bold text-sm font-mono"
+                            placeholder="0.00"
+                            style={{ fontSize: '16px' }}
+                          />
+                        </div>
                       </div>
                       {/* Service Fee */}
                       <div className="space-y-2">
                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                          <DollarSign className="w-3 h-3" /> Service Fee
+                          <DollarSign className="w-3 h-3 text-fedex-purple" /> Service Fee ({formData.currency})
                         </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={formData.serviceFee}
-                          onChange={(e) => setFormData({ ...formData, serviceFee: e.target.value })}
-                          className="w-full border-b-2 border-slate-100 py-4 focus:border-fedex-orange outline-none transition-colors text-slate-900 font-medium text-base md:text-lg lg:text-base"
-                          placeholder="0.00"
-                          style={{ fontSize: '16px' }}
-                        />
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-sm pointer-events-none">
+                            {currencySymbol}
+                          </span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={formData.serviceFee}
+                            onChange={(e) => setFormData({ ...formData, serviceFee: e.target.value })}
+                            className="w-full bg-white border border-slate-200 rounded-xl py-3 pl-8 pr-3 focus:border-fedex-orange outline-none transition-colors text-slate-900 font-bold text-sm font-mono"
+                            placeholder="0.00"
+                            style={{ fontSize: '16px' }}
+                          />
+                        </div>
                       </div>
                     </div>
                   ) : (
                     <div className="space-y-6">
                       <div className="space-y-4 border border-slate-100 p-5 rounded-2xl bg-slate-50/50">
-                        <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Package Specifications</h4>
+                        <div className="flex items-center justify-between">
+                          <h4 className="text-[10px] font-black text-slate-700 uppercase tracking-[0.2em] flex items-center gap-2">
+                            <Package className="w-3.5 h-3.5 text-fedex-orange" /> Package Specifications
+                          </h4>
+                        </div>
                         
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           {/* Package Type */}
-                          <div className="space-y-2">
+                          <div className="space-y-1.5">
                             <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Package Type</label>
                             <select
-                              value={formData.packageType || 'Box'}
+                              value={formData.packageType || 'FedEx Box (Small/Medium/Large)'}
                               onChange={(e) => setFormData({ ...formData, packageType: e.target.value })}
-                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-sm"
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-xs"
                             >
-                              <option value="Envelope">Envelope</option>
-                              <option value="Pak">Pak</option>
-                              <option value="Box">Box</option>
-                              <option value="Tube">Tube</option>
-                              <option value="Your Packaging">Your Packaging</option>
+                              {PACKAGE_TYPE_OPTIONS.map((pt) => (
+                                <option key={pt} value={pt}>{pt}</option>
+                              ))}
                             </select>
                           </div>
 
                           {/* Number of Packages */}
-                          <div className="space-y-2">
+                          <div className="space-y-1.5">
                             <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Num. of Packages</label>
                             <input
-                              required={formData.valuationMode === 'package'}
                               type="number"
                               min="1"
                               value={formData.numPackages || '1'}
@@ -388,71 +598,231 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                         </div>
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                          {/* Weight */}
-                          <div className="space-y-2">
-                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Weight (lbs)</label>
+                          {/* Weight with Unit Toggle */}
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                                <Scale className="w-3 h-3 text-slate-400" /> Weight
+                              </label>
+                              <div className="flex bg-slate-200/80 p-0.5 rounded-lg text-[10px] font-bold">
+                                <button
+                                  type="button"
+                                  onClick={() => setFormData({ ...formData, weightUnit: 'lbs' })}
+                                  className={`px-2 py-0.5 rounded-md transition-all ${
+                                    formData.weightUnit === 'lbs' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500'
+                                  }`}
+                                >
+                                  lbs
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setFormData({ ...formData, weightUnit: 'kg' })}
+                                  className={`px-2 py-0.5 rounded-md transition-all ${
+                                    formData.weightUnit === 'kg' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500'
+                                  }`}
+                                >
+                                  kg
+                                </button>
+                              </div>
+                            </div>
                             <input
-                              required={formData.valuationMode === 'package'}
                               type="number"
                               step="0.1"
-                              placeholder="0.0"
+                              placeholder={`0.0 ${formData.weightUnit}`}
                               value={formData.weight || ''}
                               onChange={(e) => setFormData({ ...formData, weight: e.target.value })}
-                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-sm"
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-sm font-mono"
                             />
                           </div>
 
-                          {/* Dimensions */}
-                          <div className="space-y-2">
-                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Dimensions (L x W x H in.)</label>
+                          {/* Dimensions with Unit Toggle */}
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                                <Maximize2 className="w-3 h-3 text-slate-400" /> Dimensions
+                              </label>
+                              <div className="flex bg-slate-200/80 p-0.5 rounded-lg text-[10px] font-bold">
+                                <button
+                                  type="button"
+                                  onClick={() => setFormData({ ...formData, dimensionUnit: 'in' })}
+                                  className={`px-2 py-0.5 rounded-md transition-all ${
+                                    formData.dimensionUnit === 'in' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500'
+                                  }`}
+                                >
+                                  in
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setFormData({ ...formData, dimensionUnit: 'cm' })}
+                                  className={`px-2 py-0.5 rounded-md transition-all ${
+                                    formData.dimensionUnit === 'cm' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500'
+                                  }`}
+                                >
+                                  cm
+                                </button>
+                              </div>
+                            </div>
                             <div className="grid grid-cols-3 gap-1">
                               <input
-                                required={formData.valuationMode === 'package'}
                                 type="number"
-                                placeholder="L"
+                                placeholder={`L (${formData.dimensionUnit})`}
                                 value={formData.length || ''}
                                 onChange={(e) => setFormData({ ...formData, length: e.target.value })}
-                                className="w-full bg-white border border-slate-200 rounded-xl px-1 py-3 text-center outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-xs"
+                                className="w-full bg-white border border-slate-200 rounded-xl px-1 py-3 text-center outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-xs font-mono"
                               />
                               <input
-                                required={formData.valuationMode === 'package'}
                                 type="number"
-                                placeholder="W"
+                                placeholder={`W (${formData.dimensionUnit})`}
                                 value={formData.width || ''}
                                 onChange={(e) => setFormData({ ...formData, width: e.target.value })}
-                                className="w-full bg-white border border-slate-200 rounded-xl px-1 py-3 text-center outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-xs"
+                                className="w-full bg-white border border-slate-200 rounded-xl px-1 py-3 text-center outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-xs font-mono"
                               />
                               <input
-                                required={formData.valuationMode === 'package'}
                                 type="number"
-                                placeholder="H"
+                                placeholder={`H (${formData.dimensionUnit})`}
                                 value={formData.height || ''}
                                 onChange={(e) => setFormData({ ...formData, height: e.target.value })}
-                                className="w-full bg-white border border-slate-200 rounded-xl px-1 py-3 text-center outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-xs"
+                                className="w-full bg-white border border-slate-200 rounded-xl px-1 py-3 text-center outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-xs font-mono"
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Declared Value & Service Fee */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-200/60">
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                              <ShieldCheck className="w-3 h-3 text-fedex-orange" /> Declared Value / Insurance ({formData.currency})
+                            </label>
+                            <div className="relative">
+                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-xs pointer-events-none">
+                                {currencySymbol}
+                              </span>
+                              <input
+                                type="number"
+                                step="0.01"
+                                placeholder="0.00"
+                                value={formData.declaredValue || ''}
+                                onChange={(e) => setFormData({ ...formData, declaredValue: e.target.value })}
+                                className="w-full bg-white border border-slate-200 rounded-xl py-2.5 pl-7 pr-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-bold text-xs font-mono"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                              <DollarSign className="w-3 h-3 text-fedex-purple" /> Service Fee ({formData.currency})
+                            </label>
+                            <div className="relative">
+                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-xs pointer-events-none">
+                                {currencySymbol}
+                              </span>
+                              <input
+                                type="number"
+                                step="0.01"
+                                placeholder="0.00"
+                                value={formData.serviceFee || ''}
+                                onChange={(e) => setFormData({ ...formData, serviceFee: e.target.value })}
+                                className="w-full bg-white border border-slate-200 rounded-xl py-2.5 pl-7 pr-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-bold text-xs font-mono"
                               />
                             </div>
                           </div>
                         </div>
                       </div>
-
-                      {/* Service Fee */}
-                      <div className="space-y-2">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                          <DollarSign className="w-3 h-3" /> Service Fee
-                        </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={formData.serviceFee}
-                          onChange={(e) => setFormData({ ...formData, serviceFee: e.target.value })}
-                          className="w-full border-b-2 border-slate-100 py-4 focus:border-fedex-orange outline-none transition-colors text-slate-900 font-medium text-base md:text-lg lg:text-base"
-                          placeholder="0.00"
-                          style={{ fontSize: '16px' }}
-                        />
-                      </div>
                     </div>
                   )}
 
+                  {/* 6. Special Handling & Delivery Options */}
+                  <div className="space-y-4 border border-slate-100 p-5 rounded-2xl bg-slate-50/50">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="w-3.5 h-3.5 text-fedex-purple" />
+                      <h4 className="text-[10px] font-black text-slate-700 uppercase tracking-[0.2em]">Special Handling & Options</h4>
+                    </div>
+
+                    {/* Checkboxes Grid */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {/* Dry Ice */}
+                      <label className="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-xl cursor-pointer hover:border-fedex-purple/40 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={formData.isDryIce}
+                          onChange={(e) => setFormData({ ...formData, isDryIce: e.target.checked })}
+                          className="w-4 h-4 rounded text-fedex-orange focus:ring-fedex-orange border-slate-300"
+                        />
+                        <div className="flex items-center gap-2">
+                          <Snowflake className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                          <span className="text-xs font-bold text-slate-800">Dry Ice Indicator</span>
+                        </div>
+                      </label>
+
+                      {/* Hazardous Materials */}
+                      <label className="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-xl cursor-pointer hover:border-fedex-purple/40 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={formData.isHazardous}
+                          onChange={(e) => setFormData({ ...formData, isHazardous: e.target.checked })}
+                          className="w-4 h-4 rounded text-fedex-orange focus:ring-fedex-orange border-slate-300"
+                        />
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                          <span className="text-xs font-bold text-slate-800">Dangerous Goods (Hazardous)</span>
+                        </div>
+                      </label>
+
+                      {/* Saturday Delivery */}
+                      <label className="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-xl cursor-pointer hover:border-fedex-purple/40 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={formData.isSaturdayDelivery}
+                          onChange={(e) => setFormData({ ...formData, isSaturdayDelivery: e.target.checked })}
+                          className="w-4 h-4 rounded text-fedex-orange focus:ring-fedex-orange border-slate-300"
+                        />
+                        <div className="flex items-center gap-2">
+                          <Calendar className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                          <span className="text-xs font-bold text-slate-800">Saturday Delivery</span>
+                        </div>
+                      </label>
+
+                      {/* Hold at Location */}
+                      <label className="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-xl cursor-pointer hover:border-fedex-purple/40 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={formData.isHoldAtLocation}
+                          onChange={(e) => setFormData({ ...formData, isHoldAtLocation: e.target.checked })}
+                          className="w-4 h-4 rounded text-fedex-orange focus:ring-fedex-orange border-slate-300"
+                        />
+                        <div className="flex items-center gap-2">
+                          <Building className="w-3.5 h-3.5 text-fedex-purple shrink-0" />
+                          <span className="text-xs font-bold text-slate-800">Hold at FedEx Location</span>
+                        </div>
+                      </label>
+                    </div>
+
+                    {/* Signature Required Options */}
+                    <div className="space-y-2 pt-2 border-t border-slate-200/60">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                        <FileSignature className="w-3.5 h-3.5 text-fedex-purple" /> Signature Confirmation
+                      </label>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {SIGNATURE_OPTIONS.map((opt) => (
+                          <button
+                            key={opt}
+                            type="button"
+                            onClick={() => setFormData({ ...formData, signatureOption: opt })}
+                            className={`py-2 px-3 rounded-xl text-xs font-bold transition-all border ${
+                              formData.signatureOption === opt
+                                ? 'bg-fedex-purple text-white border-fedex-purple shadow-sm'
+                                : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'
+                            }`}
+                          >
+                            {opt}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 7. Time and Estimated Delivery */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                     {/* Time of Entry */}
                     <div className="space-y-2">
@@ -460,7 +830,6 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                         <Clock className="w-3 h-3" /> Time of Entry
                       </label>
                       <input
-                        required
                         type="datetime-local"
                         value={formData.timeOfEntry}
                         onChange={(e) => setFormData({ ...formData, timeOfEntry: e.target.value })}
@@ -474,7 +843,6 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                         <Calendar className="w-3 h-3" /> Est. Delivery
                       </label>
                       <input
-                        required
                         type="date"
                         value={formData.estimatedDeliveryDate}
                         onChange={(e) => setFormData({ ...formData, estimatedDeliveryDate: e.target.value })}

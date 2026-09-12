@@ -15,11 +15,22 @@ import {
   CheckCircle2,
   Truck,
   ChevronRight,
-  Activity
+  Activity,
+  ShieldCheck,
+  Building,
+  DollarSign,
+  AlertTriangle,
+  Snowflake
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Shipment, ShipmentStatus, ShipmentHistoryItem } from '../types';
 import { supabase } from '../lib/supabase';
+import { 
+  CURRENCY_OPTIONS, 
+  SERVICE_TYPE_OPTIONS, 
+  PACKAGE_TYPE_OPTIONS, 
+  SIGNATURE_OPTIONS 
+} from './TheForge';
 
 interface ManageShipmentProps {
   shipment: Shipment | null;
@@ -48,14 +59,34 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
   const [isSaving, setIsSaving] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
 
-  // Editable Core Details
+  // Editable Core & Metadata Details
   const [recipient, setRecipient] = useState(shipment?.recipient_name || '');
   const [address, setAddress] = useState(shipment?.destination_address || '');
   const [origin, setOrigin] = useState(shipment?.origin_city_state || '');
-  const [valuation, setValuation] = useState(shipment?.asset_value.toString() || '0');
-  const [fee, setFee] = useState(shipment?.service_fee.toString() || '0');
+  const [senderName, setSenderName] = useState(shipment?.sender_name || '');
+  const [senderAddress, setSenderAddress] = useState(shipment?.sender_address || '');
+  const [currency, setCurrency] = useState(shipment?.currency || 'USD');
+  const [serviceType, setServiceType] = useState(shipment?.service_type || 'FedEx Priority Overnight');
+  const [valuation, setValuation] = useState((shipment?.asset_value ?? 0).toString());
+  const [fee, setFee] = useState((shipment?.service_fee ?? 0).toString());
   const [entryTime, setEntryTime] = useState(shipment?.created_at ? new Date(shipment.created_at).toISOString().slice(0, 16) : '');
   const [deliveryDate, setDeliveryDate] = useState(shipment?.estimated_delivery_date || '');
+
+  // Package Specs
+  const [packageType, setPackageType] = useState(shipment?.package_type || 'FedEx Box (Small/Medium/Large)');
+  const [weight, setWeight] = useState(shipment?.weight != null ? shipment.weight.toString() : '');
+  const [weightUnit, setWeightUnit] = useState(shipment?.weight_unit || 'lbs');
+  const [length, setLength] = useState(shipment?.length != null ? shipment.length.toString() : '');
+  const [width, setWidth] = useState(shipment?.width != null ? shipment.width.toString() : '');
+  const [height, setHeight] = useState(shipment?.height != null ? shipment.height.toString() : '');
+  const [dimensionUnit, setDimensionUnit] = useState(shipment?.dimension_unit || 'in');
+  const [numPackages, setNumPackages] = useState(shipment?.num_packages != null ? shipment.num_packages.toString() : '1');
+  const [declaredValue, setDeclaredValue] = useState(shipment?.declared_value != null ? shipment.declared_value.toString() : '');
+  const [isDryIce, setIsDryIce] = useState(Boolean(shipment?.is_dry_ice));
+  const [isHazardous, setIsHazardous] = useState(Boolean(shipment?.is_hazardous));
+  const [isSaturdayDelivery, setIsSaturdayDelivery] = useState(Boolean(shipment?.is_saturday_delivery));
+  const [isHoldAtLocation, setIsHoldAtLocation] = useState(Boolean(shipment?.is_hold_at_location));
+  const [signatureOption, setSignatureOption] = useState(shipment?.signature_option || 'None');
   
   const [isEditingDocs, setIsEditingDocs] = useState(false);
   const [isSavingDocs, setIsSavingDocs] = useState(false);
@@ -64,20 +95,41 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
   React.useEffect(() => {
     if (shipment) {
       setNewStatus(shipment.status);
-      setRecipient(shipment.recipient_name);
-      setAddress(shipment.destination_address);
-      setOrigin(shipment.origin_city_state);
-      setValuation(shipment.asset_value.toString());
-      setFee(shipment.service_fee.toString());
+      setRecipient(shipment.recipient_name || '');
+      setAddress(shipment.destination_address || '');
+      setOrigin(shipment.origin_city_state || '');
+      setSenderName(shipment.sender_name || '');
+      setSenderAddress(shipment.sender_address || '');
+      setCurrency(shipment.currency || 'USD');
+      setServiceType(shipment.service_type || 'FedEx Priority Overnight');
+      setValuation((shipment.asset_value ?? 0).toString());
+      setFee((shipment.service_fee ?? 0).toString());
       setEntryTime(shipment.created_at ? new Date(shipment.created_at).toISOString().slice(0, 16) : '');
       setDeliveryDate(shipment.estimated_delivery_date || '');
       setUpdateTime(new Date().toISOString().slice(0, 16));
+      setPackageType(shipment.package_type || 'FedEx Box (Small/Medium/Large)');
+      setWeight(shipment.weight != null ? shipment.weight.toString() : '');
+      setWeightUnit(shipment.weight_unit || 'lbs');
+      setLength(shipment.length != null ? shipment.length.toString() : '');
+      setWidth(shipment.width != null ? shipment.width.toString() : '');
+      setHeight(shipment.height != null ? shipment.height.toString() : '');
+      setDimensionUnit(shipment.dimension_unit || 'in');
+      setNumPackages(shipment.num_packages != null ? shipment.num_packages.toString() : '1');
+      setDeclaredValue(shipment.declared_value != null ? shipment.declared_value.toString() : '');
+      setIsDryIce(Boolean(shipment.is_dry_ice));
+      setIsHazardous(Boolean(shipment.is_hazardous));
+      setIsSaturdayDelivery(Boolean(shipment.is_saturday_delivery));
+      setIsHoldAtLocation(Boolean(shipment.is_hold_at_location));
+      setSignatureOption(shipment.signature_option || 'None');
     }
   }, [shipment]);
 
   const formatTrackingId = (id: string) => {
     return id.replace(/(\d{4})(\d{4})(\d{4})/, '$1 $2 $3');
   };
+
+  const activeCurrency = CURRENCY_OPTIONS.find(c => c.code === (currency || shipment?.currency)) || CURRENCY_OPTIONS[0];
+  const currencySymbol = activeCurrency.symbol;
 
   if (!shipment) return null;
 
@@ -94,14 +146,32 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
       }
       // ------------------------------------
 
-      const updatedData = {
-        recipient_name: recipient,
-        destination_address: address,
-        origin_city_state: origin,
+      const updatedData: any = {
+        recipient_name: recipient ? recipient.trim() : 'Unspecified',
+        destination_address: address ? address.trim() : 'Unspecified',
+        origin_city_state: origin ? origin.trim() : (senderAddress || senderName || 'Unspecified'),
+        sender_name: senderName ? senderName.trim() : null,
+        sender_address: senderAddress ? senderAddress.trim() : null,
+        currency: currency || 'USD',
+        service_type: serviceType || 'FedEx Priority Overnight',
         asset_value: parseFloat(valuation) || 0,
         service_fee: parseFloat(fee) || 0,
         created_at: entryTime ? new Date(entryTime).toISOString() : shipment.created_at,
-        estimated_delivery_date: deliveryDate
+        estimated_delivery_date: deliveryDate || null,
+        package_type: packageType || null,
+        weight: parseFloat(weight) || 0,
+        weight_unit: weightUnit || 'lbs',
+        length: parseFloat(length) || 0,
+        width: parseFloat(width) || 0,
+        height: parseFloat(height) || 0,
+        dimension_unit: dimensionUnit || 'in',
+        num_packages: parseInt(numPackages) || 1,
+        declared_value: parseFloat(declaredValue) || 0,
+        is_dry_ice: Boolean(isDryIce),
+        is_hazardous: Boolean(isHazardous),
+        is_saturday_delivery: Boolean(isSaturdayDelivery),
+        signature_option: signatureOption || 'None',
+        is_hold_at_location: Boolean(isHoldAtLocation)
       };
 
       const { error: updateError } = await supabase
@@ -110,9 +180,30 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
         .eq('id', shipment.id)
         .eq('user_id', userId);
 
-      if (updateError) throw updateError;
+      if (updateError) {
+        console.warn('Initial update notice, verifying migration fallback:', updateError.message);
+        if (updateError.message && (updateError.message.includes('column') || updateError.code === 'PGRST204')) {
+          const fallbackData = {
+            recipient_name: updatedData.recipient_name,
+            destination_address: updatedData.destination_address,
+            origin_city_state: updatedData.origin_city_state,
+            asset_value: updatedData.asset_value,
+            service_fee: updatedData.service_fee,
+            created_at: updatedData.created_at,
+            estimated_delivery_date: updatedData.estimated_delivery_date,
+          };
+          const { error: fallbackError } = await supabase
+            .from('shipments')
+            .update(fallbackData)
+            .eq('id', shipment.id)
+            .eq('user_id', userId);
+          if (fallbackError) throw fallbackError;
+        } else {
+          throw updateError;
+        }
+      }
 
-      const updatedShipment = {
+      const updatedShipment: Shipment = {
         ...shipment,
         ...updatedData
       };
@@ -305,6 +396,66 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
 
               {isEditingDocs ? (
                 <form onSubmit={handleUpdateCoreDetails} className="space-y-6">
+                  {/* Service & Sender Node */}
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/80 space-y-3">
+                    <div className="flex items-center gap-2 text-fedex-purple font-black text-[9px] uppercase tracking-widest">
+                      <Building className="w-3.5 h-3.5" />
+                      Sender & Service Node
+                    </div>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Service Type</label>
+                        <select
+                          value={serviceType}
+                          onChange={(e) => setServiceType(e.target.value)}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:border-fedex-purple text-xs font-bold text-slate-900"
+                        >
+                          {SERVICE_TYPE_OPTIONS.map(opt => (
+                            <option key={opt} value={opt}>{opt}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Currency</label>
+                        <select
+                          value={currency}
+                          onChange={(e) => setCurrency(e.target.value)}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:border-fedex-purple text-xs font-bold text-slate-900"
+                        >
+                          {CURRENCY_OPTIONS.map(c => (
+                            <option key={c.code} value={c.code}>{c.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Sender Name / Company</label>
+                        <input 
+                          type="text"
+                          value={senderName}
+                          onChange={(e) => setSenderName(e.target.value)}
+                          placeholder="e.g. Apex Logistics HQ"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:border-fedex-purple text-xs font-bold text-slate-900"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Sender Address</label>
+                        <input 
+                          type="text"
+                          value={senderAddress}
+                          onChange={(e) => setSenderAddress(e.target.value)}
+                          placeholder="e.g. 100 Express Blvd, Memphis, TN"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 outline-none focus:border-fedex-purple text-xs font-bold text-slate-900"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Recipient & Destination Node */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Recipient Name</label>
@@ -338,9 +489,10 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                     />
                   </div>
 
+                  {/* Valuation & Fee */}
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Valuation ($)</label>
+                      <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Valuation ({currencySymbol})</label>
                       <input 
                         type="number"
                         step="0.01"
@@ -351,7 +503,7 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                       />
                     </div>
                     <div className="space-y-2">
-                      <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Service Fee ($)</label>
+                      <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Service Fee ({currencySymbol})</label>
                       <input 
                         type="number"
                         step="0.01"
@@ -363,6 +515,7 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                     </div>
                   </div>
 
+                  {/* Time Nodes */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Time of Entry</label>
@@ -386,17 +539,208 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                     </div>
                   </div>
 
+                  {/* Package Specs */}
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/80 space-y-3">
+                    <div className="flex items-center gap-2 text-slate-700 font-black text-[9px] uppercase tracking-widest">
+                      <Package className="w-3.5 h-3.5 text-fedex-purple" />
+                      Package Specifications
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Package Type</label>
+                      <select
+                        value={packageType}
+                        onChange={(e) => setPackageType(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:border-fedex-purple text-xs font-bold text-slate-900"
+                      >
+                        {PACKAGE_TYPE_OPTIONS.map(p => (
+                          <option key={p} value={p}>{p}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                      <div>
+                        <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-1">Weight ({weightUnit})</label>
+                        <input
+                          type="number"
+                          step="0.1"
+                          value={weight}
+                          onChange={(e) => setWeight(e.target.value)}
+                          placeholder="Weight"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-900"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-1">Weight Unit</label>
+                        <select
+                          value={weightUnit}
+                          onChange={(e) => setWeightUnit(e.target.value)}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-900"
+                        >
+                          <option value="lbs">lbs</option>
+                          <option value="kg">kg</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-1">Total Pkgs</label>
+                        <input
+                          type="number"
+                          value={numPackages}
+                          onChange={(e) => setNumPackages(e.target.value)}
+                          min="1"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-900"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-1">Declared Val ({currencySymbol})</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={declaredValue}
+                          onChange={(e) => setDeclaredValue(e.target.value)}
+                          placeholder="Value"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-900"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-2">
+                      <div>
+                        <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-1">L ({dimensionUnit})</label>
+                        <input
+                          type="number"
+                          value={length}
+                          onChange={(e) => setLength(e.target.value)}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-2 py-2 text-xs font-bold text-slate-900"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-1">W ({dimensionUnit})</label>
+                        <input
+                          type="number"
+                          value={width}
+                          onChange={(e) => setWidth(e.target.value)}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-2 py-2 text-xs font-bold text-slate-900"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-1">H ({dimensionUnit})</label>
+                        <input
+                          type="number"
+                          value={height}
+                          onChange={(e) => setHeight(e.target.value)}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-2 py-2 text-xs font-bold text-slate-900"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-1">Dim Unit</label>
+                        <select
+                          value={dimensionUnit}
+                          onChange={(e) => setDimensionUnit(e.target.value)}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-2 py-2 text-xs font-bold text-slate-900"
+                        >
+                          <option value="in">in</option>
+                          <option value="cm">cm</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Special Handling */}
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/80 space-y-3">
+                    <div className="flex items-center gap-2 text-slate-700 font-black text-[9px] uppercase tracking-widest">
+                      <ShieldCheck className="w-3.5 h-3.5 text-fedex-purple" />
+                      Special Handling & Security
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Signature Option</label>
+                      <select
+                        value={signatureOption}
+                        onChange={(e) => setSignatureOption(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900"
+                      >
+                        {SIGNATURE_OPTIONS.map(s => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-[10px] font-bold text-slate-700 pt-1">
+                      <label className="flex items-center gap-2 bg-white p-2.5 rounded-xl border border-slate-200 cursor-pointer hover:border-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={isDryIce}
+                          onChange={(e) => setIsDryIce(e.target.checked)}
+                          className="accent-fedex-purple w-3.5 h-3.5 rounded"
+                        />
+                        Dry Ice
+                      </label>
+                      <label className="flex items-center gap-2 bg-white p-2.5 rounded-xl border border-slate-200 cursor-pointer hover:border-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={isHazardous}
+                          onChange={(e) => setIsHazardous(e.target.checked)}
+                          className="accent-fedex-purple w-3.5 h-3.5 rounded"
+                        />
+                        Hazardous Materials
+                      </label>
+                      <label className="flex items-center gap-2 bg-white p-2.5 rounded-xl border border-slate-200 cursor-pointer hover:border-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={isSaturdayDelivery}
+                          onChange={(e) => setIsSaturdayDelivery(e.target.checked)}
+                          className="accent-fedex-purple w-3.5 h-3.5 rounded"
+                        />
+                        Saturday Delivery
+                      </label>
+                      <label className="flex items-center gap-2 bg-white p-2.5 rounded-xl border border-slate-200 cursor-pointer hover:border-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={isHoldAtLocation}
+                          onChange={(e) => setIsHoldAtLocation(e.target.checked)}
+                          className="accent-fedex-purple w-3.5 h-3.5 rounded"
+                        />
+                        Hold At Location
+                      </label>
+                    </div>
+                  </div>
+
                   <button
                     type="submit"
                     disabled={isSavingDocs}
-                    className="w-full bg-fedex-purple text-white font-black py-4 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-[9px] disabled:opacity-50"
+                    className="w-full bg-fedex-purple hover:bg-purple-700 text-white font-black py-4 rounded-xl transition-all active:scale-95 flex items-center justify-center gap-2 uppercase tracking-widest text-[9px] disabled:opacity-50 shadow-md shadow-fedex-purple/20"
                   >
                     {isSavingDocs ? <Activity className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-                    Overwrite Logic Node
+                    Commit Metadata Node
                   </button>
                 </form>
               ) : (
                 <div className="space-y-4">
+                  {/* Sender & Service Details */}
+                  {(shipment.sender_name || shipment.service_type || shipment.currency) && (
+                    <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-100 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-fedex-purple text-[8px] font-black uppercase tracking-widest">Service & Sender Node</span>
+                        {shipment.currency && (
+                          <span className="px-2 py-0.5 bg-white border border-slate-200 rounded text-[9px] font-black text-slate-700">
+                            {shipment.currency}
+                          </span>
+                        )}
+                      </div>
+                      {shipment.service_type && (
+                        <div className="text-slate-900 text-[11px] font-black">{shipment.service_type}</div>
+                      )}
+                      {shipment.sender_name && (
+                        <div className="text-[10px] text-slate-600 font-medium">
+                          <span className="font-bold text-slate-800">Sender: </span>{shipment.sender_name}
+                          {shipment.sender_address ? ` • ${shipment.sender_address}` : ''}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-2 gap-4">
                     <div className="py-2 border-b border-slate-50">
                       <span className="text-slate-400 text-[8px] font-black uppercase tracking-widest block mb-1">Recipient</span>
@@ -413,14 +757,64 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                     <span className="text-slate-900 text-[10px] font-black uppercase italic text-slate-500 leading-tight block">{shipment.destination_address || 'Unspecified'}</span>
                   </div>
 
+                  {/* Package Specs if available */}
+                  {(shipment.package_type || (shipment.weight && shipment.weight > 0) || (shipment.declared_value && shipment.declared_value > 0)) && (
+                    <div className="py-2 border-b border-slate-50 space-y-1.5">
+                      <span className="text-slate-400 text-[8px] font-black uppercase tracking-widest block">Package Specs</span>
+                      <div className="text-[10px] text-slate-700 font-medium space-x-2">
+                        {shipment.package_type && <span className="font-bold text-slate-900">{shipment.package_type}</span>}
+                        {shipment.weight ? <span>• {shipment.weight} {shipment.weight_unit || 'lbs'}</span> : null}
+                        {shipment.length && shipment.width && shipment.height ? (
+                          <span>• {shipment.length}x{shipment.width}x{shipment.height} {shipment.dimension_unit || 'in'}</span>
+                        ) : null}
+                        {shipment.num_packages && shipment.num_packages > 1 ? (
+                          <span>• {shipment.num_packages} pkgs</span>
+                        ) : null}
+                      </div>
+                      {shipment.declared_value ? (
+                        <div className="text-[9px] text-slate-500 font-bold">
+                          Declared Value: {currencySymbol}{shipment.declared_value.toLocaleString()}
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+
+                  {/* Special Handling Badges */}
+                  {(shipment.is_dry_ice || shipment.is_hazardous || shipment.is_saturday_delivery || shipment.is_hold_at_location || (shipment.signature_option && shipment.signature_option !== 'None')) && (
+                    <div className="py-2 border-b border-slate-50">
+                      <span className="text-slate-400 text-[8px] font-black uppercase tracking-widest block mb-1.5">Special Handling</span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {shipment.is_dry_ice && (
+                          <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-md text-[8px] font-black uppercase">Dry Ice</span>
+                        )}
+                        {shipment.is_hazardous && (
+                          <span className="px-2 py-0.5 bg-amber-50 text-amber-700 rounded-md text-[8px] font-black uppercase">Hazardous</span>
+                        )}
+                        {shipment.is_saturday_delivery && (
+                          <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-md text-[8px] font-black uppercase">Sat Delivery</span>
+                        )}
+                        {shipment.is_hold_at_location && (
+                          <span className="px-2 py-0.5 bg-purple-50 text-purple-700 rounded-md text-[8px] font-black uppercase">Hold At Location</span>
+                        )}
+                        {shipment.signature_option && shipment.signature_option !== 'None' && (
+                          <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded-md text-[8px] font-black uppercase">Sig: {shipment.signature_option}</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-2 gap-4">
                     <div className="py-2 border-b border-slate-50">
                       <span className="text-slate-400 text-[8px] font-black uppercase tracking-widest block mb-1">Valuation</span>
-                      <span className="text-slate-900 text-[11px] font-black font-mono tracking-tighter block">${shipment.asset_value.toLocaleString()}</span>
+                      <span className="text-slate-900 text-[11px] font-black font-mono tracking-tighter block">
+                        {currencySymbol}{(shipment.asset_value ?? 0).toLocaleString()}
+                      </span>
                     </div>
                     <div className="py-2 border-b border-slate-50">
                       <span className="text-slate-400 text-[8px] font-black uppercase tracking-widest block mb-1">Service Fee</span>
-                      <span className="text-slate-900 text-[11px] font-black font-mono tracking-tighter block">${shipment.service_fee.toLocaleString()}</span>
+                      <span className="text-slate-900 text-[11px] font-black font-mono tracking-tighter block">
+                        {currencySymbol}{(shipment.service_fee ?? 0).toLocaleString()}
+                      </span>
                     </div>
                   </div>
 

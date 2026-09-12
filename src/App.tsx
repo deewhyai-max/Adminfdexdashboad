@@ -179,10 +179,18 @@ export default function App() {
   };
 
   const filteredShipments = useMemo(() => {
-    return savedShipments.filter(s => 
-      s.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      s.recipient_name.toLowerCase().includes(searchQuery.toLowerCase())
-    ).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    const q = searchQuery.toLowerCase().trim().replace(/\s+/g, '');
+    const rawQ = searchQuery.toLowerCase().trim();
+    if (!rawQ) return [...savedShipments].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+    return savedShipments.filter(s => {
+      const idMatch = s.id.toLowerCase().includes(q) || formatTrackingId(s.id).toLowerCase().includes(rawQ);
+      const recipientMatch = s.recipient_name?.toLowerCase().includes(rawQ);
+      const senderMatch = s.sender_name?.toLowerCase().includes(rawQ);
+      const destMatch = s.destination_address?.toLowerCase().includes(rawQ);
+      const serviceMatch = s.service_type?.toLowerCase().includes(rawQ);
+      return idMatch || recipientMatch || senderMatch || destMatch || serviceMatch;
+    }).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }, [savedShipments, searchQuery]);
 
   if (!isAuthReady) {

@@ -30,6 +30,10 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { Shipment, ShipmentStatus, ShipmentHistoryItem } from '../types';
 import { supabase } from '../lib/supabase';
+import { CURRENCY_OPTIONS, CurrencyOption, getCurrencySymbol } from '../constants/currencies';
+
+export { CURRENCY_OPTIONS, getCurrencySymbol };
+export type { CurrencyOption };
 
 interface TheForgeProps {
   isOpen: boolean;
@@ -38,20 +42,6 @@ interface TheForgeProps {
   onOptimisticCreate: (shipment: Shipment) => void;
   userId: string;
 }
-
-export const CURRENCY_OPTIONS = [
-  { code: 'USD', symbol: '$', label: 'USD ($)' },
-  { code: 'EUR', symbol: '€', label: 'EUR (€)' },
-  { code: 'GBP', symbol: '£', label: 'GBP (£)' },
-  { code: 'CAD', symbol: '$', label: 'CAD ($)' },
-  { code: 'NGN', symbol: '₦', label: 'NGN (₦)' },
-  { code: 'AUD', symbol: '$', label: 'AUD ($)' },
-  { code: 'JPY', symbol: '¥', label: 'JPY (¥)' },
-  { code: 'CHF', symbol: 'Fr', label: 'CHF (Fr)' },
-  { code: 'ZAR', symbol: 'R', label: 'ZAR (R)' },
-  { code: 'AED', symbol: 'AED', label: 'AED (د.إ)' },
-  { code: 'CNY', symbol: '¥', label: 'CNY (¥)' },
-];
 
 export const SERVICE_TYPE_OPTIONS = [
   'FedEx Priority Overnight',
@@ -390,7 +380,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                       </div>
 
                       {/* Currency Dropdown Selector */}
-                      <div className="space-y-1.5 sm:w-44">
+                      <div className="space-y-1.5 sm:w-56">
                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
                           <Coins className="w-3.5 h-3.5 text-fedex-orange" /> Currency
                         </label>

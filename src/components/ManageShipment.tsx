@@ -29,7 +29,8 @@ import {
   CURRENCY_OPTIONS, 
   SERVICE_TYPE_OPTIONS, 
   PACKAGE_TYPE_OPTIONS, 
-  SIGNATURE_OPTIONS 
+  SIGNATURE_OPTIONS,
+  getCurrencySymbol 
 } from './TheForge';
 
 interface ManageShipmentProps {
@@ -128,8 +129,9 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
     return id.replace(/(\d{4})(\d{4})(\d{4})/, '$1 $2 $3');
   };
 
-  const activeCurrency = CURRENCY_OPTIONS.find(c => c.code === (currency || shipment?.currency)) || CURRENCY_OPTIONS[0];
+  const activeCurrency = CURRENCY_OPTIONS.find(c => c.code === currency) || CURRENCY_OPTIONS[0];
   const currencySymbol = activeCurrency.symbol;
+  const readOnlyCurrencySymbol = getCurrencySymbol(shipment?.currency);
 
   if (!shipment) return null;
 
@@ -773,7 +775,7 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                       </div>
                       {shipment.declared_value ? (
                         <div className="text-[9px] text-slate-500 font-bold">
-                          Declared Value: {currencySymbol}{shipment.declared_value.toLocaleString()}
+                          Declared Value: {readOnlyCurrencySymbol}{shipment.declared_value.toLocaleString()}
                         </div>
                       ) : null}
                     </div>
@@ -807,13 +809,13 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                     <div className="py-2 border-b border-slate-50">
                       <span className="text-slate-400 text-[8px] font-black uppercase tracking-widest block mb-1">Valuation</span>
                       <span className="text-slate-900 text-[11px] font-black font-mono tracking-tighter block">
-                        {currencySymbol}{(shipment.asset_value ?? 0).toLocaleString()}
+                        {readOnlyCurrencySymbol}{(shipment.asset_value ?? 0).toLocaleString()}
                       </span>
                     </div>
                     <div className="py-2 border-b border-slate-50">
                       <span className="text-slate-400 text-[8px] font-black uppercase tracking-widest block mb-1">Service Fee</span>
                       <span className="text-slate-900 text-[11px] font-black font-mono tracking-tighter block">
-                        {currencySymbol}{(shipment.service_fee ?? 0).toLocaleString()}
+                        {readOnlyCurrencySymbol}{(shipment.service_fee ?? 0).toLocaleString()}
                       </span>
                     </div>
                   </div>

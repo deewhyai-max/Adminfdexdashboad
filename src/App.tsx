@@ -189,7 +189,8 @@ export default function App() {
       const senderMatch = s.sender_name?.toLowerCase().includes(rawQ);
       const destMatch = s.destination_address?.toLowerCase().includes(rawQ);
       const serviceMatch = s.service_type?.toLowerCase().includes(rawQ);
-      return idMatch || recipientMatch || senderMatch || destMatch || serviceMatch;
+      const currencyMatch = s.currency?.toLowerCase().includes(rawQ);
+      return idMatch || recipientMatch || senderMatch || destMatch || serviceMatch || currencyMatch;
     }).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }, [savedShipments, searchQuery]);
 

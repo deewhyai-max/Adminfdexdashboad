@@ -110,16 +110,7 @@ export function calculate8StageSpacedTimestamps(
   const now = new Date();
 
   // Rule 1: Stage 1 (Shipping label created) set to NOW() (the exact creation date/time)
-  let start = now;
-  if (startTime) {
-    const parsedStart = startTime instanceof Date ? startTime : new Date(startTime);
-    if (!isNaN(parsedStart.getTime())) {
-      // Allow recent start time within 10 minutes of now, but clamp to now if older
-      if (parsedStart.getTime() >= now.getTime() - 10 * 60 * 1000) {
-        start = parsedStart;
-      }
-    }
-  }
+  const start = now;
 
   // Rule 3: Stage 8 (Delivered) target on estimated_delivery_date
   let end: Date;
@@ -131,7 +122,7 @@ export function calculate8StageSpacedTimestamps(
       if (raw.includes('T')) {
         end = new Date(raw);
       } else {
-        // Standard FedEx end-of-day target time 17:00:00 (5:00 PM) on delivery day
+        // Standard FedEx end-of-day target arrival time 17:00:00 (5:00 PM) on delivery day
         end = new Date(`${raw}T17:00:00`);
       }
     } else {
@@ -141,12 +132,12 @@ export function calculate8StageSpacedTimestamps(
     end = new Date(start.getTime() + 72 * 60 * 60 * 1000);
   }
 
-  // Guard: if end is invalid or less than 3 hours into the future, fallback to 72 hours from start
-  if (isNaN(end.getTime()) || end.getTime() <= start.getTime() + 3 * 3600 * 1000) {
+  // Guard: if end is invalid or less than 6 hours into the future, fallback to 72 hours from start
+  if (isNaN(end.getTime()) || end.getTime() <= start.getTime() + 6 * 3600 * 1000) {
     end = new Date(start.getTime() + 72 * 60 * 60 * 1000);
   }
 
-  // Rule 2: Evenly divide total duration across Stages 2 through 7 (7 total intervals from 1 to 8)
+  // Rule 2: Evenly divide total duration across Stages 2 through 7 (7 total intervals from Stage 1 to Stage 8)
   const totalDurationMs = end.getTime() - start.getTime();
   const stepMs = totalDurationMs / 7;
 
@@ -178,6 +169,101 @@ export function calculate8StageSpacedTimestamps(
   }
 
   return timestamps;
+}
+
+export interface MilestoneEvaluation {
+  activeStatus: ShipmentStatus;
+  activeStageIndex: number;
+  completedStageIndices: number[];
+  upcomingStageIndices: number[];
+  isDelivered: boolean;
+  isOnHold: boolean;
+  nextMilestoneTime?: string | null;
+}
+
+// Active vs Upcoming Stage Evaluation Logic:
+// Evaluates tracking stages based on current live clock time.
+// Stage 1 is active on creation; Stages 2-8 remain unfulfilled / UPCOMING
+// until their scheduled future timestamp is reached or exceeded.
+export function evaluateShipmentMilestones(
+  history: ShipmentHistoryItem[],
+  autoAdvance?: boolean | null,
+  isOnHold?: boolean | null,
+  fallbackStatus?: ShipmentStatus
+): MilestoneEvaluation {
+  if (!history || history.length === 0) {
+    return {
+      activeStatus: fallbackStatus || 'Shipping label created',
+      activeStageIndex: 0,
+      completedStageIndices: [],
+      upcomingStageIndices: [],
+      isDelivered: false,
+      isOnHold: Boolean(isOnHold),
+      nextMilestoneTime: null
+    };
+  }
+
+  // 1. If ON HOLD master override is active
+  if (isOnHold) {
+    let activeIdx = 0;
+    if (fallbackStatus) {
+      const match = history.findIndex(h => h.status_name === fallbackStatus);
+      if (match >= 0) activeIdx = match;
+    }
+    return {
+      activeStatus: 'On Hold',
+      activeStageIndex: activeIdx,
+      completedStageIndices: history.map((_, i) => i).filter(i => i < activeIdx),
+      upcomingStageIndices: history.map((_, i) => i).filter(i => i > activeIdx),
+      isDelivered: false,
+      isOnHold: true,
+      nextMilestoneTime: null
+    };
+  }
+
+  // 2. If Auto-Advance is explicitly disabled (Manual Override mode)
+  if (autoAdvance === false) {
+    let activeIdx = 0;
+    if (fallbackStatus) {
+      const match = history.findIndex(h => h.status_name === fallbackStatus);
+      if (match >= 0) activeIdx = match;
+    }
+    return {
+      activeStatus: fallbackStatus || history[activeIdx]?.status_name || 'Shipping label created',
+      activeStageIndex: activeIdx,
+      completedStageIndices: history.map((_, i) => i).filter(i => i < activeIdx),
+      upcomingStageIndices: history.map((_, i) => i).filter(i => i > activeIdx),
+      isDelivered: fallbackStatus === 'Delivered',
+      isOnHold: false,
+      nextMilestoneTime: history[activeIdx + 1]?.timestamp || null
+    };
+  }
+
+  // 3. Natural clock-based auto-advance:
+  // As live clock time passes, tracking naturally advances only when milestone timestamp <= now
+  const nowMs = Date.now();
+  let latestReachedIdx = 0; // Stage 1 is guaranteed reached at creation (NOW)
+
+  for (let i = 0; i < history.length; i++) {
+    const itemTime = new Date(history[i].timestamp).getTime();
+    if (!isNaN(itemTime) && itemTime <= nowMs) {
+      latestReachedIdx = i;
+    }
+  }
+
+  const activeItem = history[latestReachedIdx] || history[0];
+  const isDelivered = latestReachedIdx === history.length - 1 && activeItem.status_name === 'Delivered';
+  const nextMilestone = history[latestReachedIdx + 1];
+
+  return {
+    activeStatus: activeItem.status_name as ShipmentStatus,
+    activeStageIndex: latestReachedIdx,
+    completedStageIndices: history.map((_, i) => i).filter(i => i < latestReachedIdx),
+    upcomingStageIndices: history.map((_, i) => i).filter(i => i > latestReachedIdx),
+    isDelivered,
+    isOnHold: false,
+    nextMilestoneTime: nextMilestone ? nextMilestone.timestamp : null
+  };
 }
 
 // Local synchronous fallback generator

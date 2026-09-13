@@ -38,6 +38,7 @@ import {
   generate8StageRoute, 
   calculateFedExRouteWithAI, 
   calculate8StageSpacedTimestamps,
+  evaluateShipmentMilestones,
   FEDEX_8_STAGES 
 } from '../utils/routeGenerator';
 import { 
@@ -161,6 +162,16 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
     }
   }, [shipment]);
 
+  // Active vs Upcoming Evaluation Logic:
+  // Dynamically determines active, completed, and upcoming stages according to live clock time
+  const currentHistoryToEvaluate = milestones.length > 0 ? milestones : (shipment?.history || []);
+  const milestoneEval = evaluateShipmentMilestones(
+    currentHistoryToEvaluate,
+    autoAdvance,
+    isOnHold,
+    shipment?.status
+  );
+
   const handleToggleHold = async () => {
     const nextHold = !isOnHold;
     setIsOnHold(nextHold);
@@ -261,7 +272,7 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
   const handleRespaceTimestamps = () => {
     if (!milestones || milestones.length !== 8) return;
     const freshTimestamps = calculate8StageSpacedTimestamps(
-      entryTime || new Date(),
+      new Date(),
       deliveryDate || shipment?.estimated_delivery_date || undefined
     );
     setMilestones(prev => prev.map((m, idx) => ({
@@ -677,21 +688,62 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                   <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
                     {milestones.map((item, idx) => {
                       const isEditing = editingMilestoneIdx === idx;
+                      const isActive = milestoneEval.activeStageIndex === idx && !milestoneEval.isOnHold;
+                      const isCompleted = milestoneEval.completedStageIndices.includes(idx);
+                      const isUpcoming = milestoneEval.upcomingStageIndices.includes(idx);
+                      const isHoldStage = milestoneEval.isOnHold && milestoneEval.activeStageIndex === idx;
+
                       return (
                         <div
                           key={idx}
-                          className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs transition-all hover:border-fedex-purple/30"
+                          className={`border rounded-xl p-3 text-xs transition-all ${
+                            isHoldStage
+                              ? 'bg-red-50/50 border-red-300'
+                              : isActive
+                              ? 'bg-purple-50/50 border-fedex-purple/40 ring-1 ring-fedex-purple/10'
+                              : isCompleted
+                              ? 'bg-emerald-50/30 border-emerald-200'
+                              : 'bg-slate-50 border-slate-200 hover:border-fedex-purple/30'
+                          }`}
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2.5 min-w-0">
-                              <span className="w-5 h-5 rounded-full bg-fedex-purple/10 text-fedex-purple font-black text-[10px] flex items-center justify-center shrink-0">
+                              <span className={`w-5 h-5 rounded-full font-black text-[10px] flex items-center justify-center shrink-0 ${
+                                isHoldStage
+                                  ? 'bg-red-600 text-white'
+                                  : isActive
+                                  ? 'bg-fedex-purple text-white shadow-sm'
+                                  : isCompleted
+                                  ? 'bg-emerald-600 text-white'
+                                  : 'bg-slate-200 text-slate-600'
+                              }`}>
                                 {idx + 1}
                               </span>
                               <div className="min-w-0">
-                                <p className="font-black text-slate-800 text-xs truncate">
-                                  {item.status_name}
-                                </p>
-                                <p className="text-[11px] text-slate-500 truncate flex items-center gap-1">
+                                <div className="flex items-center gap-2">
+                                  <p className="font-black text-slate-800 text-xs truncate">
+                                    {item.status_name}
+                                  </p>
+                                  {isHoldStage ? (
+                                    <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-red-600 text-white">
+                                      HOLD
+                                    </span>
+                                  ) : isActive ? (
+                                    <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-fedex-purple text-white flex items-center gap-1 shadow-sm">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                                      ACTIVE
+                                    </span>
+                                  ) : isCompleted ? (
+                                    <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-700">
+                                      COMPLETED
+                                    </span>
+                                  ) : (
+                                    <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-slate-200 text-slate-600">
+                                      UPCOMING
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[11px] text-slate-500 truncate flex items-center gap-1 mt-0.5">
                                   <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
                                   {item.location || 'Facility Hub'}
                                 </p>
@@ -699,7 +751,8 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                             </div>
 
                             <div className="flex items-center gap-2 shrink-0">
-                              <span className="text-[10px] font-mono text-slate-400 hidden sm:inline-block">
+                              <span className="text-[10px] font-mono text-slate-500 hidden sm:inline-block">
+                                {isUpcoming ? 'Scheduled: ' : ''}
                                 {new Date(item.timestamp).toLocaleString('en-US', {
                                   month: 'short',
                                   day: 'numeric',
@@ -1352,41 +1405,82 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
             )}
 
             <div className="relative pl-8 space-y-10 before:absolute before:left-3 before:top-2 before:bottom-2 before:w-[2px] before:bg-slate-200">
-              {(milestones.length > 0 ? milestones : shipment.history).map((item, idx) => (
-                <div key={idx} className="relative group">
-                  <div className={`absolute -left-[30px] top-1.5 w-5 h-5 rounded-full border-4 border-slate-50 transition-all z-10 ${
-                    idx === 0 ? 'bg-fedex-purple ring-4 ring-fedex-purple/10 scale-110' : 'bg-slate-300'
-                  }`} />
-                  <div className="flex flex-col">
-                    <div className="flex flex-wrap items-center gap-3 mb-2">
-                      <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded bg-white shadow-sm border ${
-                        item.status_name === 'On Hold' 
-                          ? 'text-red-600 border-red-200 bg-red-50' 
-                          : idx === 0 
-                            ? 'text-fedex-purple border-slate-100' 
-                            : 'text-slate-400 border-slate-100'
+              {(milestones.length > 0 ? milestones : (shipment.history || [])).map((item, idx) => {
+                const isActive = milestoneEval.activeStageIndex === idx && !milestoneEval.isOnHold;
+                const isCompleted = milestoneEval.completedStageIndices.includes(idx);
+                const isUpcoming = milestoneEval.upcomingStageIndices.includes(idx);
+                const isHoldStage = milestoneEval.isOnHold && milestoneEval.activeStageIndex === idx;
+
+                return (
+                  <div key={idx} className="relative group">
+                    <div className={`absolute -left-[30px] top-1.5 w-5 h-5 rounded-full border-4 border-slate-50 transition-all z-10 ${
+                      isHoldStage 
+                        ? 'bg-red-500 ring-4 ring-red-500/20 scale-110'
+                        : isActive 
+                        ? 'bg-fedex-purple ring-4 ring-fedex-purple/20 scale-110 animate-pulse' 
+                        : isCompleted
+                        ? 'bg-emerald-500 ring-2 ring-emerald-500/20'
+                        : 'bg-slate-300'
+                    }`} />
+                    <div className="flex flex-col">
+                      <div className="flex flex-wrap items-center gap-2.5 mb-2">
+                        <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded shadow-sm border ${
+                          isHoldStage
+                            ? 'text-red-600 border-red-200 bg-red-50'
+                            : isActive 
+                            ? 'text-fedex-purple border-purple-200 bg-purple-50 font-black' 
+                            : isCompleted
+                            ? 'text-emerald-700 border-emerald-200 bg-emerald-50'
+                            : 'text-slate-400 border-slate-200 bg-slate-50'
+                        }`}>
+                          {item.status_name}
+                        </span>
+
+                        {isHoldStage ? (
+                          <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-red-600 text-white">
+                            ON HOLD
+                          </span>
+                        ) : isActive ? (
+                          <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-fedex-purple text-white flex items-center gap-1 shadow-sm">
+                            <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                            ACTIVE STAGE
+                          </span>
+                        ) : isCompleted ? (
+                          <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-700">
+                            COMPLETED
+                          </span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-slate-100 text-slate-500 border border-slate-200">
+                            UPCOMING
+                          </span>
+                        )}
+
+                        <span className="text-slate-400 text-[9px] font-bold uppercase tracking-tight">
+                          {(() => {
+                            const date = new Date(item.timestamp);
+                            const d = date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+                            const t = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+                            return isUpcoming ? `Scheduled: ${d} • ${t}` : `${d} • ${t}`;
+                          })()}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 text-slate-900 text-xs font-black uppercase tracking-tight mb-2">
+                        <MapPin className="w-3.5 h-3.5 text-slate-400 group-hover:text-fedex-purple transition-colors" />
+                        {item.location}
+                      </div>
+                      <p className={`text-[11px] leading-relaxed tracking-tight p-4 rounded-2xl border shadow-sm ${
+                        isActive
+                          ? 'bg-purple-50/40 border-fedex-purple/20 text-slate-800 font-bold'
+                          : isCompleted
+                          ? 'bg-white border-slate-100 text-slate-600 font-medium'
+                          : 'bg-slate-50/50 border-slate-100 text-slate-400 font-normal'
                       }`}>
-                        {item.status_name}
-                      </span>
-                      <span className="text-slate-400 text-[9px] font-bold uppercase tracking-tight">
-                        {(() => {
-                          const date = new Date(item.timestamp);
-                          const d = date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-                          const t = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
-                          return `${d} • ${t}`;
-                        })()}
-                      </span>
+                        {item.description}
+                      </p>
                     </div>
-                    <div className="flex items-center gap-2 text-slate-900 text-xs font-black uppercase tracking-tight mb-2">
-                      <MapPin className="w-3.5 h-3.5 text-slate-400 group-hover:text-fedex-purple transition-colors" />
-                      {item.location}
-                    </div>
-                    <p className="text-slate-500 text-[11px] font-bold leading-relaxed tracking-tight bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
-                      {item.description}
-                    </p>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>

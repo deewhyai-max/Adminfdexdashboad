@@ -364,8 +364,13 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     }
 
     // Strictly enforce Fixed Timestamp Spacing Rules before saving to Supabase:
-    // Stage 1 = NOW() (eventTime), Stages 2-7 = evenly distributed future timestamps, Stage 8 = estimated delivery target
-    const guaranteedTimestamps = calculate8StageSpacedTimestamps(eventTime, estimatedDeliveryDate || undefined);
+    // Stage 1 = NOW() (the exact creation timestamp)
+    // Stages 2-7 = evenly divided future timestamps spaced across duration
+    // Stage 8 = target arrival on estimated_delivery_date
+    const nowIso = new Date().toISOString();
+    const guaranteedTimestamps = calculate8StageSpacedTimestamps(nowIso, estimatedDeliveryDate || undefined);
+
+    // Apply spaced timestamps to history and waypoints, preserving custom manual adjustments
     finalHistory = finalHistory.map((item, idx) => ({
       ...item,
       timestamp: guaranteedTimestamps[idx]
@@ -389,7 +394,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       status: (finalHistory[0]?.status_name || 'Shipping label created') as ShipmentStatus,
       history: finalHistory,
       estimated_delivery_date: estimatedDeliveryDate,
-      created_at: eventTime,
+      created_at: nowIso,
       package_type: packageType,
       weight,
       length,
@@ -457,6 +462,8 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
               width: dbPayload.width,
               height: dbPayload.height,
               num_packages: dbPayload.num_packages,
+              is_on_hold: dbPayload.is_on_hold,
+              auto_advance: dbPayload.auto_advance,
             };
             await supabase.from('shipments').insert([fallbackPayload]);
           }
@@ -1217,21 +1224,40 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                         <div className="space-y-2">
                           {milestones.map((item, idx) => {
                             const isEditing = editingMilestoneIdx === idx;
+                            const isActiveStage = idx === 0;
                             return (
                               <div
                                 key={idx}
-                                className="bg-white border border-slate-200 rounded-xl p-3 text-xs transition-all hover:border-fedex-purple/30"
+                                className={`border rounded-xl p-3 text-xs transition-all ${
+                                  isActiveStage 
+                                    ? 'bg-purple-50/40 border-fedex-purple/30 ring-1 ring-fedex-purple/10' 
+                                    : 'bg-white border-slate-200 hover:border-fedex-purple/30'
+                                }`}
                               >
                                 <div className="flex items-center justify-between gap-2">
                                   <div className="flex items-center gap-2.5 min-w-0">
-                                    <span className="w-5 h-5 rounded-full bg-fedex-purple/10 text-fedex-purple font-black text-[10px] flex items-center justify-center shrink-0">
+                                    <span className={`w-5 h-5 rounded-full font-black text-[10px] flex items-center justify-center shrink-0 ${
+                                      isActiveStage ? 'bg-fedex-purple text-white' : 'bg-slate-100 text-slate-500'
+                                    }`}>
                                       {idx + 1}
                                     </span>
                                     <div className="min-w-0">
-                                      <p className="font-black text-slate-800 text-xs truncate">
-                                        {item.status_name}
-                                      </p>
-                                      <p className="text-[11px] text-slate-500 truncate flex items-center gap-1">
+                                      <div className="flex items-center gap-2">
+                                        <p className="font-black text-slate-800 text-xs truncate">
+                                          {item.status_name}
+                                        </p>
+                                        {isActiveStage ? (
+                                          <span className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-fedex-purple text-white flex items-center gap-1 shadow-sm">
+                                            <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                                            ACTIVE (NOW)
+                                          </span>
+                                        ) : (
+                                          <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-slate-100 text-slate-500 border border-slate-200">
+                                            UPCOMING
+                                          </span>
+                                        )}
+                                      </div>
+                                      <p className="text-[11px] text-slate-500 truncate flex items-center gap-1 mt-0.5">
                                         <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
                                         {item.location || 'Facility Hub'}
                                       </p>
@@ -1239,14 +1265,19 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                                   </div>
 
                                   <div className="flex items-center gap-3 shrink-0">
-                                    <span className="text-[10px] font-mono text-slate-400 hidden sm:inline-block">
-                                      {new Date(item.timestamp).toLocaleString('en-US', {
-                                        month: 'short',
-                                        day: 'numeric',
-                                        hour: '2-digit',
-                                        minute: '2-digit'
-                                      })}
-                                    </span>
+                                    <div className="text-right hidden sm:block">
+                                      <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">
+                                        {isActiveStage ? 'Current (Now)' : 'Scheduled'}
+                                      </p>
+                                      <span className="text-[10px] font-mono text-slate-600 font-bold">
+                                        {new Date(item.timestamp).toLocaleString('en-US', {
+                                          month: 'short',
+                                          day: 'numeric',
+                                          hour: '2-digit',
+                                          minute: '2-digit'
+                                        })}
+                                      </span>
+                                    </div>
                                     <button
                                       type="button"
                                       onClick={() => setEditingMilestoneIdx(isEditing ? null : idx)}

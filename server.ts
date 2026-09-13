@@ -55,16 +55,7 @@ function calculate8StageSpacedTimestamps(
   const now = new Date();
 
   // Rule 1: Stage 1 (Shipping label created) set to NOW() (the exact creation date/time)
-  let start = now;
-  if (startTime) {
-    const parsedStart = startTime instanceof Date ? startTime : new Date(startTime);
-    if (!isNaN(parsedStart.getTime())) {
-      // Allow recent start time within 10 minutes of now, but clamp to now if older
-      if (parsedStart.getTime() >= now.getTime() - 10 * 60 * 1000) {
-        start = parsedStart;
-      }
-    }
-  }
+  const start = now;
 
   // Rule 3: Stage 8 (Delivered) target on estimated_delivery_date
   let end: Date;
@@ -76,7 +67,7 @@ function calculate8StageSpacedTimestamps(
       if (raw.includes('T')) {
         end = new Date(raw);
       } else {
-        // Standard FedEx end-of-day target time 17:00:00 (5:00 PM) on delivery day
+        // Standard FedEx end-of-day target arrival time 17:00:00 (5:00 PM) on delivery day
         end = new Date(`${raw}T17:00:00`);
       }
     } else {
@@ -86,12 +77,12 @@ function calculate8StageSpacedTimestamps(
     end = new Date(start.getTime() + 72 * 60 * 60 * 1000);
   }
 
-  // Guard: if end is invalid or less than 3 hours into the future, fallback to 72 hours from start
-  if (isNaN(end.getTime()) || end.getTime() <= start.getTime() + 3 * 3600 * 1000) {
+  // Guard: if end is invalid or less than 6 hours into the future, fallback to 72 hours from start
+  if (isNaN(end.getTime()) || end.getTime() <= start.getTime() + 6 * 3600 * 1000) {
     end = new Date(start.getTime() + 72 * 60 * 60 * 1000);
   }
 
-  // Rule 2: Evenly divide total duration across Stages 2 through 7 (7 total intervals from 1 to 8)
+  // Rule 2: Evenly divide total duration across Stages 2 through 7 (7 total intervals from Stage 1 to Stage 8)
   const totalDurationMs = end.getTime() - start.getTime();
   const stepMs = totalDurationMs / 7;
 

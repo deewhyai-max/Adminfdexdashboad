@@ -8,10 +8,11 @@ export type ShipmentStatus =
   | 'Package received by FedEx'
   | 'In Transit'
   | 'On the way'
-  | 'Out for Delivery'
   | 'Arriving at destination facility'
-  | 'On Hold'
+  | 'At local FedEx facility'
+  | 'Out for Delivery'
   | 'Delivered'
+  | 'On Hold'
   | 'Pending'
   | 'Exception';
 
@@ -20,6 +21,14 @@ export interface ShipmentHistoryItem {
   status_name: ShipmentStatus;
   location: string;
   description: string;
+}
+
+export interface RouteWaypoint {
+  stage: number;
+  stage_name: ShipmentStatus;
+  location: string;
+  estimated_time: string;
+  description?: string;
 }
 
 export interface Shipment {
@@ -52,6 +61,9 @@ export interface Shipment {
   signature_option?: string | null;
   is_hold_at_location?: boolean | null;
   service_type?: string | null;
+  is_on_hold?: boolean | null;
+  auto_advance?: boolean | null;
+  route_waypoints?: RouteWaypoint[] | null;
 }
 
 export interface User {

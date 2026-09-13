@@ -20,11 +20,21 @@ import {
   Building,
   DollarSign,
   AlertTriangle,
-  Snowflake
+  Snowflake,
+  Route,
+  Play,
+  Pause,
+  Sliders,
+  Sparkles,
+  Edit3,
+  ChevronDown,
+  ChevronUp,
+  RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Shipment, ShipmentStatus, ShipmentHistoryItem } from '../types';
+import { Shipment, ShipmentStatus, ShipmentHistoryItem, RouteWaypoint } from '../types';
 import { supabase } from '../lib/supabase';
+import { generate8StageRoute, calculateFedExRouteWithAI, FEDEX_8_STAGES } from '../utils/routeGenerator';
 import { 
   CURRENCY_OPTIONS, 
   SERVICE_TYPE_OPTIONS, 
@@ -48,8 +58,9 @@ const STATUS_OPTIONS: ShipmentStatus[] = [
   'Package received by FedEx',
   'In Transit',
   'On the way',
-  'Out for Delivery',
   'Arriving at destination facility',
+  'At local FedEx facility',
+  'Out for Delivery',
   'On Hold',
   'Delivered'
 ];
@@ -94,6 +105,20 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
   const [isEditingDocs, setIsEditingDocs] = useState(false);
   const [isSavingDocs, setIsSavingDocs] = useState(false);
 
+  // Automation & 8-Stage Milestone Route State
+  const [autoAdvance, setAutoAdvance] = useState(shipment?.auto_advance !== false);
+  const [isOnHold, setIsOnHold] = useState(Boolean(shipment?.is_on_hold));
+  const [milestones, setMilestones] = useState<ShipmentHistoryItem[]>(shipment?.history || []);
+  const [routeWaypoints, setRouteWaypoints] = useState<RouteWaypoint[]>(shipment?.route_waypoints || []);
+  const [editingMilestoneIdx, setEditingMilestoneIdx] = useState<number | null>(null);
+  const [showMilestoneEngine, setShowMilestoneEngine] = useState(false);
+  const [isSavingMilestones, setIsSavingMilestones] = useState(false);
+  const [milestonesSuccess, setMilestonesSuccess] = useState(false);
+  const [isCalculatingRoute, setIsCalculatingRoute] = useState(false);
+  const [aiHubName, setAiHubName] = useState<string | null>(null);
+  const [aiRoutingSummary, setAiRoutingSummary] = useState<string | null>(null);
+  const [isAiGenerated, setIsAiGenerated] = useState(false);
+
   // Sync state with selected shipment
   React.useEffect(() => {
     if (shipment) {
@@ -124,8 +149,141 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
       setIsSaturdayDelivery(Boolean(shipment.is_saturday_delivery));
       setIsHoldAtLocation(Boolean(shipment.is_hold_at_location));
       setSignatureOption(shipment.signature_option || 'None');
+      setAutoAdvance(shipment.auto_advance !== false);
+      setIsOnHold(Boolean(shipment.is_on_hold));
+      setMilestones(shipment.history || []);
+      setRouteWaypoints(shipment.route_waypoints || []);
     }
   }, [shipment]);
+
+  const handleToggleHold = async () => {
+    const nextHold = !isOnHold;
+    setIsOnHold(nextHold);
+    try {
+      const { error: hErr } = await supabase
+        .from('shipments')
+        .update({ is_on_hold: nextHold })
+        .eq('id', shipment.id)
+        .eq('user_id', userId);
+      if (!hErr) {
+        onUpdate({
+          ...shipment,
+          is_on_hold: nextHold
+        });
+      }
+    } catch (err) {
+      console.error("Hold toggle update error:", err);
+    }
+  };
+
+  const handleToggleAutoAdvance = async () => {
+    const nextAdvance = !autoAdvance;
+    setAutoAdvance(nextAdvance);
+    try {
+      const { error: aErr } = await supabase
+        .from('shipments')
+        .update({ auto_advance: nextAdvance })
+        .eq('id', shipment.id)
+        .eq('user_id', userId);
+      if (!aErr) {
+        onUpdate({
+          ...shipment,
+          auto_advance: nextAdvance
+        });
+      }
+    } catch (err) {
+      console.error("Auto-advance toggle update error:", err);
+    }
+  };
+
+  const handleGenerate8StageRoute = async () => {
+    setIsCalculatingRoute(true);
+    try {
+      const plan = await calculateFedExRouteWithAI({
+        origin: origin || senderAddress || senderName || 'Origin Facility',
+        senderAddress: senderAddress || undefined,
+        destination: address || 'Destination Address',
+        recipientName: recipient || shipment.recipient_name,
+        senderName: senderName || shipment.sender_name || undefined,
+        serviceType: serviceType || shipment.service_type || undefined,
+        packageType: packageType || shipment.package_type || undefined,
+        weight: parseAmount(weight, 0),
+        weightUnit: weightUnit || shipment.weight_unit || 'lbs',
+        startTime: entryTime || shipment.created_at,
+        estimatedDeliveryDate: deliveryDate || shipment.estimated_delivery_date || undefined,
+        isDryIce: isDryIce,
+        isHazardous: isHazardous,
+        isSaturdayDelivery: isSaturdayDelivery
+      });
+      setMilestones(plan.history);
+      setRouteWaypoints(plan.route_waypoints);
+      setAiHubName(plan.hub_name || null);
+      setAiRoutingSummary(plan.routing_summary || null);
+      setIsAiGenerated(Boolean(plan.ai_generated));
+      setShowMilestoneEngine(true);
+    } catch (err) {
+      console.error("AI route calculation error in ManageShipment:", err);
+    } finally {
+      setIsCalculatingRoute(false);
+    }
+  };
+
+  const handleMilestoneChange = (index: number, field: keyof ShipmentHistoryItem, value: string) => {
+    setMilestones(prev => {
+      const updated = [...prev];
+      updated[index] = {
+        ...updated[index],
+        [field]: value
+      };
+      return updated;
+    });
+    if (field === 'location' || field === 'status_name' || field === 'timestamp') {
+      setRouteWaypoints(prev => {
+        const updated = [...prev];
+        if (updated[index]) {
+          updated[index] = {
+            ...updated[index],
+            location: field === 'location' ? value : updated[index].location,
+            stage_name: field === 'status_name' ? (value as ShipmentStatus) : updated[index].stage_name,
+            estimated_time: field === 'timestamp' ? value : updated[index].estimated_time
+          };
+        }
+        return updated;
+      });
+    }
+  };
+
+  const handleSaveMilestones = async () => {
+    setIsSavingMilestones(true);
+    setMilestonesSuccess(false);
+    try {
+      const { error: mError } = await supabase
+        .from('shipments')
+        .update({
+          history: milestones,
+          route_waypoints: routeWaypoints,
+          auto_advance: autoAdvance,
+          is_on_hold: isOnHold
+        })
+        .eq('id', shipment.id)
+        .eq('user_id', userId);
+      if (mError) throw mError;
+
+      onUpdate({
+        ...shipment,
+        history: milestones,
+        route_waypoints: routeWaypoints,
+        auto_advance: autoAdvance,
+        is_on_hold: isOnHold
+      });
+      setMilestonesSuccess(true);
+      setTimeout(() => setMilestonesSuccess(false), 2500);
+    } catch (err) {
+      console.error('Milestone save failure:', err);
+    } finally {
+      setIsSavingMilestones(false);
+    }
+  };
 
   const formatTrackingId = (id: string) => {
     return id.replace(/(\d{4})(\d{4})(\d{4})/, '$1 $2 $3');
@@ -175,7 +333,11 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
         is_hazardous: Boolean(isHazardous),
         is_saturday_delivery: Boolean(isSaturdayDelivery),
         signature_option: signatureOption && signatureOption.trim() ? signatureOption.trim() : 'None',
-        is_hold_at_location: Boolean(isHoldAtLocation)
+        is_hold_at_location: Boolean(isHoldAtLocation),
+        is_on_hold: Boolean(isOnHold),
+        auto_advance: Boolean(autoAdvance),
+        route_waypoints: routeWaypoints,
+        history: milestones.length > 0 ? milestones : shipment.history
       };
 
       const { error: updateError } = await supabase
@@ -296,6 +458,289 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
         <div className="max-w-4xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-10">
           {/* Left: Update Form */}
           <div className="space-y-8">
+            {/* Master Controls & Automation */}
+            <section className="bg-white p-6 md:p-8 rounded-[2rem] border border-slate-200 shadow-sm space-y-5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 bg-fedex-purple/10 rounded-lg">
+                    <Sliders className="w-4 h-4 text-fedex-purple" />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-xs uppercase tracking-[0.2em] text-slate-900">Master Automation & Overrides</h3>
+                    <p className="text-[10px] text-slate-400">Database bound • instant sync</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Auto-Advance Timeline Toggle */}
+                <div className="bg-slate-50 border border-slate-200 p-4 rounded-2xl flex flex-col justify-between space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Clock className="w-3.5 h-3.5 text-fedex-purple" />
+                        <span className="text-xs font-black text-slate-800 uppercase tracking-wider">Auto-Advance</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 leading-tight">
+                        Progresses through the 8 scheduled milestones as timestamps arrive.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleToggleAutoAdvance}
+                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                        autoAdvance ? 'bg-fedex-purple' : 'bg-slate-300'
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                          autoAdvance ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  <div>
+                    <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider ${
+                      autoAdvance ? 'bg-purple-100 text-fedex-purple' : 'bg-slate-200 text-slate-600'
+                    }`}>
+                      {autoAdvance ? 'Active Progression' : 'Static / Manual'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* ON HOLD Master Override Toggle */}
+                <div className={`p-4 rounded-2xl border transition-all flex flex-col justify-between space-y-3 ${
+                  isOnHold 
+                    ? 'bg-amber-500/10 border-fedex-orange text-slate-900 shadow-md shadow-fedex-orange/10' 
+                    : 'bg-slate-50 border-slate-200'
+                }`}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Pause className={`w-3.5 h-3.5 ${isOnHold ? 'text-fedex-orange' : 'text-slate-400'}`} />
+                        <span className={`text-xs font-black uppercase tracking-wider ${isOnHold ? 'text-fedex-orange' : 'text-slate-800'}`}>
+                          ON HOLD Override
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 leading-tight">
+                        Freezes milestone progress and triggers the Hold badge on tracking portal.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleToggleHold}
+                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                        isOnHold ? 'bg-fedex-orange' : 'bg-slate-300'
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                          isOnHold ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  <div>
+                    {isOnHold ? (
+                      <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-fedex-orange text-white flex items-center gap-1.5 animate-pulse w-fit">
+                        <span className="w-1.5 h-1.5 rounded-full bg-white" />
+                        HOLD ACTIVE — SHIPMENT FROZEN
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-slate-200 text-slate-600">
+                        Transit Normal
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            {/* 8-Stage Route & Waypoints Engine */}
+            <section className="bg-white p-6 md:p-8 rounded-[2rem] border border-slate-200 shadow-sm space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 bg-fedex-orange/10 rounded-lg">
+                    <Route className="w-4 h-4 text-fedex-orange" />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-xs uppercase tracking-[0.2em] text-slate-900">FedEx 8-Stage Logistics Engine</h3>
+                    <p className="text-[10px] text-slate-400">AI-calculated milestones & FedEx transit hubs</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleGenerate8StageRoute}
+                    disabled={isCalculatingRoute}
+                    className="flex items-center gap-2 bg-fedex-purple hover:bg-purple-700 disabled:opacity-60 text-white px-3.5 py-2 rounded-xl text-[11px] font-bold uppercase tracking-wider transition-all shadow-sm active:scale-95 cursor-pointer"
+                  >
+                    <Sparkles className={`w-3 h-3 text-amber-300 ${isCalculatingRoute ? 'animate-spin' : ''}`} />
+                    {isCalculatingRoute 
+                      ? 'AI Calculating Route...' 
+                      : milestones.length === 8 
+                      ? 'AI Recalculate Route' 
+                      : 'AI Calculate Route'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowMilestoneEngine(!showMilestoneEngine)}
+                    className="p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-600 hover:text-slate-900 transition-colors"
+                    title="Toggle milestone editor"
+                  >
+                    {showMilestoneEngine ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* AI Routing Context Banner */}
+              {showMilestoneEngine && (aiHubName || aiRoutingSummary) && (
+                <div className="bg-purple-50/80 border border-fedex-purple/20 rounded-xl p-3 flex items-start gap-2.5">
+                  <Sparkles className="w-4 h-4 text-fedex-purple shrink-0 mt-0.5" />
+                  <div className="space-y-0.5 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="font-black text-fedex-purple uppercase text-[10px] tracking-wider">
+                        {isAiGenerated ? 'Gemini FedEx AI Hub' : 'FedEx Global Hub Routing'}
+                      </span>
+                      {aiHubName && (
+                        <span className="px-2 py-0.5 rounded bg-white border border-fedex-purple/30 text-fedex-purple text-[10px] font-bold">
+                          {aiHubName}
+                        </span>
+                      )}
+                    </div>
+                    {aiRoutingSummary && (
+                      <p className="text-slate-600 text-[11px] leading-relaxed">
+                        {aiRoutingSummary}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Milestones List & Inline Overrides */}
+              {showMilestoneEngine && (
+                <div className="space-y-3 pt-2 border-t border-slate-100">
+                  <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">
+                    <span>{milestones.length} Stage Nodes Configured</span>
+                    <button
+                      type="button"
+                      disabled={isSavingMilestones}
+                      onClick={handleSaveMilestones}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] uppercase tracking-wider shadow-sm transition-all disabled:opacity-50"
+                    >
+                      {isSavingMilestones ? (
+                        <Activity className="w-3 h-3 animate-spin" />
+                      ) : milestonesSuccess ? (
+                        <CheckCircle2 className="w-3 h-3 text-white" />
+                      ) : (
+                        <Save className="w-3 h-3" />
+                      )}
+                      {milestonesSuccess ? 'Schedule Saved!' : 'Save Schedule'}
+                    </button>
+                  </div>
+
+                  <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
+                    {milestones.map((item, idx) => {
+                      const isEditing = editingMilestoneIdx === idx;
+                      return (
+                        <div
+                          key={idx}
+                          className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs transition-all hover:border-fedex-purple/30"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <span className="w-5 h-5 rounded-full bg-fedex-purple/10 text-fedex-purple font-black text-[10px] flex items-center justify-center shrink-0">
+                                {idx + 1}
+                              </span>
+                              <div className="min-w-0">
+                                <p className="font-black text-slate-800 text-xs truncate">
+                                  {item.status_name}
+                                </p>
+                                <p className="text-[11px] text-slate-500 truncate flex items-center gap-1">
+                                  <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
+                                  {item.location || 'Facility Hub'}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="text-[10px] font-mono text-slate-400 hidden sm:inline-block">
+                                {new Date(item.timestamp).toLocaleString('en-US', {
+                                  month: 'short',
+                                  day: 'numeric',
+                                  hour: '2-digit',
+                                  minute: '2-digit'
+                                })}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setEditingMilestoneIdx(isEditing ? null : idx)}
+                                className="p-1.5 text-slate-400 hover:text-fedex-purple hover:bg-white rounded-lg transition-colors"
+                                title="Edit milestone parameters"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Inline Milestone Editor */}
+                          {isEditing && (
+                            <div className="mt-3 pt-3 border-t border-slate-200 grid grid-cols-1 sm:grid-cols-2 gap-3 bg-white p-3 rounded-lg">
+                              <div className="space-y-1">
+                                <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">
+                                  Milestone Stage Text
+                                </label>
+                                <input
+                                  type="text"
+                                  value={item.status_name}
+                                  onChange={(e) => handleMilestoneChange(idx, 'status_name', e.target.value)}
+                                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-800 outline-none focus:border-fedex-orange"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">
+                                  Facility / City / Hub Location
+                                </label>
+                                <input
+                                  type="text"
+                                  value={item.location}
+                                  onChange={(e) => handleMilestoneChange(idx, 'location', e.target.value)}
+                                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-800 outline-none focus:border-fedex-orange"
+                                />
+                              </div>
+                              <div className="space-y-1 sm:col-span-2">
+                                <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">
+                                  Scheduled Timestamp (ISO)
+                                </label>
+                                <input
+                                  type="text"
+                                  value={item.timestamp}
+                                  onChange={(e) => handleMilestoneChange(idx, 'timestamp', e.target.value)}
+                                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono text-slate-700 outline-none focus:border-fedex-orange"
+                                />
+                              </div>
+                              <div className="space-y-1 sm:col-span-2">
+                                <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">
+                                  Description Notes
+                                </label>
+                                <input
+                                  type="text"
+                                  value={item.description}
+                                  onChange={(e) => handleMilestoneChange(idx, 'description', e.target.value)}
+                                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-600 outline-none focus:border-fedex-orange"
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </section>
+
             <section>
               <div className="flex items-center gap-2 mb-6 text-slate-900">
                 <div className="p-2 bg-fedex-purple/10 rounded-lg">
@@ -841,14 +1286,39 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
 
           {/* Right: History */}
           <div className="lg:sticky lg:top-0">
-            <h3 className="text-slate-900 font-black text-xs uppercase tracking-[0.2em] mb-8 flex items-center gap-2">
-              <div className="p-2 bg-slate-100 rounded-lg">
-                <History className="w-4 h-4 text-slate-500" />
+            <div className="flex items-center justify-between mb-8">
+              <h3 className="text-slate-900 font-black text-xs uppercase tracking-[0.2em] flex items-center gap-2">
+                <div className="p-2 bg-slate-100 rounded-lg">
+                  <History className="w-4 h-4 text-slate-500" />
+                </div>
+                Transmission History
+              </h3>
+              <span className="text-[10px] font-bold font-mono text-slate-400">
+                {(milestones.length > 0 ? milestones : shipment.history).length} Nodes
+              </span>
+            </div>
+
+            {isOnHold && (
+              <div className="mb-6 p-4 rounded-2xl bg-amber-500/10 border border-fedex-orange text-slate-900 flex items-start gap-3 shadow-md shadow-fedex-orange/10">
+                <div className="p-2 rounded-xl bg-fedex-orange text-white shrink-0 animate-pulse">
+                  <Pause className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-fedex-orange">
+                      ON HOLD Override Engaged
+                    </span>
+                    <span className="w-2 h-2 rounded-full bg-fedex-orange animate-ping" />
+                  </div>
+                  <p className="text-xs text-slate-600 leading-snug">
+                    Real-time timeline progression is frozen at the active step. The tracking portal displays the dynamic <strong className="text-fedex-orange">ON HOLD</strong> alert badge while preserving original milestone sequences.
+                  </p>
+                </div>
               </div>
-              Transmission History
-            </h3>
+            )}
+
             <div className="relative pl-8 space-y-10 before:absolute before:left-3 before:top-2 before:bottom-2 before:w-[2px] before:bg-slate-200">
-              {shipment.history.map((item, idx) => (
+              {(milestones.length > 0 ? milestones : shipment.history).map((item, idx) => (
                 <div key={idx} className="relative group">
                   <div className={`absolute -left-[30px] top-1.5 w-5 h-5 rounded-full border-4 border-slate-50 transition-all z-10 ${
                     idx === 0 ? 'bg-fedex-purple ring-4 ring-fedex-purple/10 scale-110' : 'bg-slate-300'

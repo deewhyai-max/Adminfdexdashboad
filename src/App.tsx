@@ -35,14 +35,15 @@ const DARK_NAVY = '#0f172a';
 
 // --- Components ---
 
-const StatusBadge = ({ status }: { status: ShipmentStatus }) => {
+const StatusBadge = ({ status, isOnHold, autoAdvance }: { status: ShipmentStatus; isOnHold?: boolean; autoAdvance?: boolean }) => {
   const styles: Record<string, string> = {
     'Shipping label created': 'bg-fedex-orange text-white',
     'Package received by FedEx': 'bg-blue-500 text-white',
     'In Transit': 'bg-fedex-purple text-white',
     'On the way': 'bg-indigo-500 text-white',
-    'Out for Delivery': 'bg-sky-500 text-white',
     'Arriving at destination facility': 'bg-teal-500 text-white',
+    'At local FedEx facility': 'bg-sky-600 text-white',
+    'Out for Delivery': 'bg-sky-500 text-white',
     'On Hold': 'bg-red-500 text-white',
     'Delivered': 'bg-green-500 text-white',
     'Pending': 'bg-slate-500 text-white',
@@ -50,9 +51,22 @@ const StatusBadge = ({ status }: { status: ShipmentStatus }) => {
   };
 
   return (
-    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${styles[status] || styles.Pending}`}>
-      {status}
-    </span>
+    <div className="flex items-center gap-1.5 flex-wrap justify-end">
+      {isOnHold && (
+        <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-fedex-orange text-white flex items-center gap-1 shadow-sm shadow-fedex-orange/20 animate-pulse">
+          <span className="w-1.5 h-1.5 rounded-full bg-white" />
+          ON HOLD
+        </span>
+      )}
+      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${styles[status] || styles.Pending}`}>
+        {status}
+      </span>
+      {autoAdvance === false && (
+        <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-slate-800 text-slate-400 border border-slate-700">
+          Static
+        </span>
+      )}
+    </div>
   );
 };
 
@@ -280,7 +294,11 @@ export default function App() {
                     <span className="text-fedex-purple font-mono text-sm font-black tracking-widest">
                       #{formatTrackingId(shipment.id)}
                     </span>
-                    <StatusBadge status={shipment.status} />
+                    <StatusBadge 
+                      status={shipment.status} 
+                      isOnHold={shipment.is_on_hold} 
+                      autoAdvance={shipment.auto_advance} 
+                    />
                   </div>
                   <h3 className="text-slate-200 text-base font-black uppercase tracking-wider truncate mb-2">
                     {shipment.recipient_name}

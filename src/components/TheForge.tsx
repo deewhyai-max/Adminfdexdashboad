@@ -40,10 +40,21 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Shipment, ShipmentStatus, ShipmentHistoryItem, RouteWaypoint } from '../types';
 import { supabase } from '../lib/supabase';
 import { CURRENCY_OPTIONS, CurrencyOption, getCurrencySymbol } from '../constants/currencies';
-import { generate8StageRoute, calculateFedExRouteWithAI, FEDEX_8_STAGES } from '../utils/routeGenerator';
+import { 
+  generate8StageRoute, 
+  calculateFedExRouteWithAI, 
+  calculate8StageSpacedTimestamps,
+  FEDEX_8_STAGES 
+} from '../utils/routeGenerator';
 
 export { CURRENCY_OPTIONS, getCurrencySymbol };
 export type { CurrencyOption };
+
+const getDefaultDeliveryDate = () => {
+  const d = new Date();
+  d.setDate(d.getDate() + 3);
+  return d.toISOString().slice(0, 10);
+};
 
 interface TheForgeProps {
   isOpen: boolean;
@@ -141,7 +152,10 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
           autoAdvance: true,
           isOnHold: false,
           ...parsed,
-          timeOfEntry: new Date().toISOString().slice(0, 16) // Always refresh time
+          timeOfEntry: new Date().toISOString().slice(0, 16), // Always refresh time
+          estimatedDeliveryDate: (parsed.estimatedDeliveryDate && parsed.estimatedDeliveryDate >= new Date().toISOString().slice(0, 10))
+            ? parsed.estimatedDeliveryDate
+            : getDefaultDeliveryDate()
         };
       } catch (e) {
         console.error("Cache Recovery Failed:", e);
@@ -175,7 +189,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       autoAdvance: true,
       isOnHold: false,
       timeOfEntry: new Date().toISOString().slice(0, 16),
-      estimatedDeliveryDate: '',
+      estimatedDeliveryDate: getDefaultDeliveryDate(),
     };
   });
 
@@ -348,6 +362,18 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       finalHistory = plan.history;
       finalWaypoints = plan.route_waypoints;
     }
+
+    // Strictly enforce Fixed Timestamp Spacing Rules before saving to Supabase:
+    // Stage 1 = NOW() (eventTime), Stages 2-7 = evenly distributed future timestamps, Stage 8 = estimated delivery target
+    const guaranteedTimestamps = calculate8StageSpacedTimestamps(eventTime, estimatedDeliveryDate || undefined);
+    finalHistory = finalHistory.map((item, idx) => ({
+      ...item,
+      timestamp: guaranteedTimestamps[idx]
+    }));
+    finalWaypoints = (finalWaypoints && finalWaypoints.length === 8 ? finalWaypoints : finalHistory).map((item, idx) => ({
+      ...item,
+      estimated_time: guaranteedTimestamps[idx]
+    }));
 
     const isOnHold = Boolean(formData.isOnHold);
     const autoAdvance = Boolean(formData.autoAdvance);

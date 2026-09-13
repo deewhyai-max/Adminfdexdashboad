@@ -34,7 +34,12 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { Shipment, ShipmentStatus, ShipmentHistoryItem, RouteWaypoint } from '../types';
 import { supabase } from '../lib/supabase';
-import { generate8StageRoute, calculateFedExRouteWithAI, FEDEX_8_STAGES } from '../utils/routeGenerator';
+import { 
+  generate8StageRoute, 
+  calculateFedExRouteWithAI, 
+  calculate8StageSpacedTimestamps,
+  FEDEX_8_STAGES 
+} from '../utils/routeGenerator';
 import { 
   CURRENCY_OPTIONS, 
   SERVICE_TYPE_OPTIONS, 
@@ -251,6 +256,22 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
         return updated;
       });
     }
+  };
+
+  const handleRespaceTimestamps = () => {
+    if (!milestones || milestones.length !== 8) return;
+    const freshTimestamps = calculate8StageSpacedTimestamps(
+      entryTime || new Date(),
+      deliveryDate || shipment?.estimated_delivery_date || undefined
+    );
+    setMilestones(prev => prev.map((m, idx) => ({
+      ...m,
+      timestamp: freshTimestamps[idx]
+    })));
+    setRouteWaypoints(prev => prev.map((w, idx) => ({
+      ...w,
+      estimated_time: freshTimestamps[idx]
+    })));
   };
 
   const handleSaveMilestones = async () => {
@@ -623,21 +644,34 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                 <div className="space-y-3 pt-2 border-t border-slate-100">
                   <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">
                     <span>{milestones.length} Stage Nodes Configured</span>
-                    <button
-                      type="button"
-                      disabled={isSavingMilestones}
-                      onClick={handleSaveMilestones}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] uppercase tracking-wider shadow-sm transition-all disabled:opacity-50"
-                    >
-                      {isSavingMilestones ? (
-                        <Activity className="w-3 h-3 animate-spin" />
-                      ) : milestonesSuccess ? (
-                        <CheckCircle2 className="w-3 h-3 text-white" />
-                      ) : (
-                        <Save className="w-3 h-3" />
+                    <div className="flex items-center gap-2">
+                      {milestones.length === 8 && (
+                        <button
+                          type="button"
+                          onClick={handleRespaceTimestamps}
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[10px] uppercase tracking-wider transition-all"
+                          title="Evenly re-space Stages 2-8 into the future up to Est. Delivery"
+                        >
+                          <Clock className="w-3 h-3 text-fedex-purple" />
+                          Re-Space Timestamps
+                        </button>
                       )}
-                      {milestonesSuccess ? 'Schedule Saved!' : 'Save Schedule'}
-                    </button>
+                      <button
+                        type="button"
+                        disabled={isSavingMilestones}
+                        onClick={handleSaveMilestones}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[10px] uppercase tracking-wider shadow-sm transition-all disabled:opacity-50"
+                      >
+                        {isSavingMilestones ? (
+                          <Activity className="w-3 h-3 animate-spin" />
+                        ) : milestonesSuccess ? (
+                          <CheckCircle2 className="w-3 h-3 text-white" />
+                        ) : (
+                          <Save className="w-3 h-3" />
+                        )}
+                        {milestonesSuccess ? 'Schedule Saved!' : 'Save Schedule'}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">

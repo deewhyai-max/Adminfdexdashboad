@@ -47,6 +47,83 @@ function determineFedExHub(origin: string, destination: string, serviceType: str
   return { hubName: "FedEx World Hub (SuperHub)", location: "Memphis SuperHub (KMEM), TN" };
 }
 
+// Calculate 8-stage spaced timestamps according to fixed FedEx timeline rules
+function calculate8StageSpacedTimestamps(
+  startTime?: string | Date,
+  estimatedDeliveryDate?: string | Date
+): string[] {
+  const now = new Date();
+
+  // Rule 1: Stage 1 (Shipping label created) set to NOW() (the exact creation date/time)
+  let start = now;
+  if (startTime) {
+    const parsedStart = startTime instanceof Date ? startTime : new Date(startTime);
+    if (!isNaN(parsedStart.getTime())) {
+      // Allow recent start time within 10 minutes of now, but clamp to now if older
+      if (parsedStart.getTime() >= now.getTime() - 10 * 60 * 1000) {
+        start = parsedStart;
+      }
+    }
+  }
+
+  // Rule 3: Stage 8 (Delivered) target on estimated_delivery_date
+  let end: Date;
+  if (estimatedDeliveryDate) {
+    if (estimatedDeliveryDate instanceof Date) {
+      end = new Date(estimatedDeliveryDate.getTime());
+    } else if (typeof estimatedDeliveryDate === 'string' && estimatedDeliveryDate.trim()) {
+      const raw = estimatedDeliveryDate.trim();
+      if (raw.includes('T')) {
+        end = new Date(raw);
+      } else {
+        // Standard FedEx end-of-day target time 17:00:00 (5:00 PM) on delivery day
+        end = new Date(`${raw}T17:00:00`);
+      }
+    } else {
+      end = new Date(start.getTime() + 72 * 60 * 60 * 1000);
+    }
+  } else {
+    end = new Date(start.getTime() + 72 * 60 * 60 * 1000);
+  }
+
+  // Guard: if end is invalid or less than 3 hours into the future, fallback to 72 hours from start
+  if (isNaN(end.getTime()) || end.getTime() <= start.getTime() + 3 * 3600 * 1000) {
+    end = new Date(start.getTime() + 72 * 60 * 60 * 1000);
+  }
+
+  // Rule 2: Evenly divide total duration across Stages 2 through 7 (7 total intervals from 1 to 8)
+  const totalDurationMs = end.getTime() - start.getTime();
+  const stepMs = totalDurationMs / 7;
+
+  const timestamps: string[] = [];
+  let prevMs = start.getTime();
+
+  for (let stage = 1; stage <= 8; stage++) {
+    if (stage === 1) {
+      timestamps.push(start.toISOString());
+    } else if (stage === 8) {
+      timestamps.push(end.toISOString());
+    } else {
+      const stepIndex = stage - 1; // 1 to 6
+      const rawMs = start.getTime() + stepIndex * stepMs;
+      let roundedMs = Math.round(rawMs / 60000) * 60000;
+
+      // Enforce strict chronological future progression (at least 15 min gap)
+      if (roundedMs <= prevMs) {
+        roundedMs = prevMs + 15 * 60 * 1000;
+      }
+      if (roundedMs >= end.getTime()) {
+        roundedMs = end.getTime() - (8 - stage) * 15 * 60 * 1000;
+      }
+
+      prevMs = roundedMs;
+      timestamps.push(new Date(roundedMs).toISOString());
+    }
+  }
+
+  return timestamps;
+}
+
 // Algorithmic Fallback Generator ensuring 100% reliability
 function generateAlgorithmicFedExRoute(params: {
   origin: string;
@@ -61,28 +138,8 @@ function generateAlgorithmicFedExRoute(params: {
   const originCity = extractCityOrRegion(originClean, "Origin Facility");
   const destCity = extractCityOrRegion(destClean, "Destination Facility");
 
-  let start = params.startTime ? new Date(params.startTime) : new Date();
-  if (isNaN(start.getTime())) start = new Date();
-
-  let end: Date;
-  if (params.estimatedDeliveryDate && params.estimatedDeliveryDate.trim()) {
-    const rawDelivery = params.estimatedDeliveryDate.trim();
-    if (rawDelivery.includes('T')) {
-      end = new Date(rawDelivery);
-    } else {
-      end = new Date(`${rawDelivery}T13:45:00`);
-    }
-  } else {
-    end = new Date(start.getTime() + 72 * 60 * 60 * 1000);
-  }
-
-  if (isNaN(end.getTime()) || end.getTime() <= start.getTime() + 3600000) {
-    end = new Date(start.getTime() + 72 * 60 * 60 * 1000);
-  }
-
-  const totalDuration = end.getTime() - start.getTime();
-  const stageRatios = [0.0, 0.08, 0.28, 0.50, 0.72, 0.85, 0.93, 1.0];
   const fedExHub = determineFedExHub(originClean, destClean, params.serviceType || "");
+  const stageTimestamps = calculate8StageSpacedTimestamps(params.startTime, params.estimatedDeliveryDate);
 
   const stageData = [
     {
@@ -135,18 +192,11 @@ function generateAlgorithmicFedExRoute(params: {
     }
   ];
 
-  let lastTimestamp = start.getTime();
   const history = stageData.map((item, index) => {
-    let stageMs = start.getTime() + totalDuration * stageRatios[index];
-    if (index > 0 && stageMs <= lastTimestamp) {
-      stageMs = lastTimestamp + 30 * 60 * 1000;
-    }
-    lastTimestamp = stageMs;
-    const timeStr = new Date(stageMs).toISOString();
     return {
       status_name: item.status,
       location: item.location,
-      timestamp: timeStr,
+      timestamp: stageTimestamps[index],
       description: item.desc
     };
   });
@@ -155,7 +205,7 @@ function generateAlgorithmicFedExRoute(params: {
     stage: item.stage,
     stage_name: item.status,
     location: history[index].location,
-    estimated_time: history[index].timestamp,
+    estimated_time: stageTimestamps[index],
     description: history[index].description
   }));
 
@@ -303,28 +353,20 @@ Logistical Routing Rules:
     const parsed = JSON.parse(response.text || "{}");
 
     if (parsed.stages && Array.isArray(parsed.stages) && parsed.stages.length === 8) {
-      // Validate chronological order
-      let lastTime = new Date(startTime || Date.now()).getTime();
-      const sanitizedHistory = parsed.stages.map((s: any, idx: number) => {
-        let t = new Date(s.timestamp).getTime();
-        if (isNaN(t) || (idx > 0 && t <= lastTime)) {
-          t = lastTime + 2 * 60 * 60 * 1000;
-        }
-        lastTime = t;
-        const validTime = new Date(t).toISOString();
-        return {
-          status_name: s.status_name,
-          location: s.location,
-          timestamp: validTime,
-          description: s.description
-        };
-      });
+      // Enforce Fixed Timestamp Spacing Rules: Stage 1 = NOW(), Stages 2-7 = evenly divided future timestamps, Stage 8 = delivery target
+      const guaranteedTimestamps = calculate8StageSpacedTimestamps(startTime, estimatedDeliveryDate);
+      const sanitizedHistory = parsed.stages.map((s: any, idx: number) => ({
+        status_name: s.status_name,
+        location: s.location,
+        timestamp: guaranteedTimestamps[idx],
+        description: s.description
+      }));
 
       const sanitizedWaypoints = parsed.stages.map((s: any, idx: number) => ({
         stage: s.stage || (idx + 1),
         stage_name: s.status_name,
         location: sanitizedHistory[idx].location,
-        estimated_time: sanitizedHistory[idx].timestamp,
+        estimated_time: guaranteedTimestamps[idx],
         description: sanitizedHistory[idx].description
       }));
 

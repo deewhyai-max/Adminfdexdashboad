@@ -102,6 +102,84 @@ export function getSmartFedExHub(origin: string, destination: string, serviceTyp
   return { hubName: "FedEx World Hub (SuperHub)", hubLocation: "Memphis SuperHub (KMEM), TN" };
 }
 
+// Calculate 8-stage spaced timestamps according to fixed FedEx timeline rules
+export function calculate8StageSpacedTimestamps(
+  startTime?: string | Date,
+  estimatedDeliveryDate?: string | Date
+): string[] {
+  const now = new Date();
+
+  // Rule 1: Stage 1 (Shipping label created) set to NOW() (the exact creation date/time)
+  let start = now;
+  if (startTime) {
+    const parsedStart = startTime instanceof Date ? startTime : new Date(startTime);
+    if (!isNaN(parsedStart.getTime())) {
+      // Allow recent start time within 10 minutes of now, but clamp to now if older
+      if (parsedStart.getTime() >= now.getTime() - 10 * 60 * 1000) {
+        start = parsedStart;
+      }
+    }
+  }
+
+  // Rule 3: Stage 8 (Delivered) target on estimated_delivery_date
+  let end: Date;
+  if (estimatedDeliveryDate) {
+    if (estimatedDeliveryDate instanceof Date) {
+      end = new Date(estimatedDeliveryDate.getTime());
+    } else if (typeof estimatedDeliveryDate === 'string' && estimatedDeliveryDate.trim()) {
+      const raw = estimatedDeliveryDate.trim();
+      if (raw.includes('T')) {
+        end = new Date(raw);
+      } else {
+        // Standard FedEx end-of-day target time 17:00:00 (5:00 PM) on delivery day
+        end = new Date(`${raw}T17:00:00`);
+      }
+    } else {
+      end = new Date(start.getTime() + 72 * 60 * 60 * 1000);
+    }
+  } else {
+    end = new Date(start.getTime() + 72 * 60 * 60 * 1000);
+  }
+
+  // Guard: if end is invalid or less than 3 hours into the future, fallback to 72 hours from start
+  if (isNaN(end.getTime()) || end.getTime() <= start.getTime() + 3 * 3600 * 1000) {
+    end = new Date(start.getTime() + 72 * 60 * 60 * 1000);
+  }
+
+  // Rule 2: Evenly divide total duration across Stages 2 through 7 (7 total intervals from 1 to 8)
+  const totalDurationMs = end.getTime() - start.getTime();
+  const stepMs = totalDurationMs / 7;
+
+  const timestamps: string[] = [];
+  let prevMs = start.getTime();
+
+  for (let stage = 1; stage <= 8; stage++) {
+    if (stage === 1) {
+      timestamps.push(start.toISOString());
+    } else if (stage === 8) {
+      timestamps.push(end.toISOString());
+    } else {
+      const stepIndex = stage - 1; // 1 to 6
+      const rawMs = start.getTime() + stepIndex * stepMs;
+      // Round to nearest minute for clean, realistic operational timestamps
+      let roundedMs = Math.round(rawMs / 60000) * 60000;
+
+      // Enforce strict chronological future progression (at least 15 min gap)
+      if (roundedMs <= prevMs) {
+        roundedMs = prevMs + 15 * 60 * 1000;
+      }
+      if (roundedMs >= end.getTime()) {
+        roundedMs = end.getTime() - (8 - stage) * 15 * 60 * 1000;
+      }
+
+      prevMs = roundedMs;
+      timestamps.push(new Date(roundedMs).toISOString());
+    }
+  }
+
+  return timestamps;
+}
+
 // Local synchronous fallback generator
 export function generate8StageRoute(options: RouteGeneratorOptions): GeneratedRoutePlan {
   const originClean = options.origin?.trim() || options.senderAddress?.trim() || 'Origin Location';
@@ -110,28 +188,6 @@ export function generate8StageRoute(options: RouteGeneratorOptions): GeneratedRo
   const originCity = extractCityOrRegion(originClean, 'Origin Facility');
   const destCity = extractCityOrRegion(destClean, 'Destination Hub');
   const hub = getSmartFedExHub(originClean, destClean, options.serviceType);
-
-  let start = options.startTime ? new Date(options.startTime) : new Date();
-  if (isNaN(start.getTime())) start = new Date();
-
-  let end: Date;
-  if (options.estimatedDeliveryDate && options.estimatedDeliveryDate.trim()) {
-    const rawDelivery = options.estimatedDeliveryDate.trim();
-    if (rawDelivery.includes('T')) {
-      end = new Date(rawDelivery);
-    } else {
-      end = new Date(`${rawDelivery}T13:45:00`);
-    }
-  } else {
-    end = new Date(start.getTime() + 72 * 60 * 60 * 1000);
-  }
-
-  if (isNaN(end.getTime()) || end.getTime() <= start.getTime() + 3600000) {
-    end = new Date(start.getTime() + 72 * 60 * 60 * 1000);
-  }
-
-  const totalDuration = end.getTime() - start.getTime();
-  const stageRatios = [0.0, 0.08, 0.28, 0.50, 0.72, 0.85, 0.93, 1.0];
 
   const stageLocations: string[] = [
     originClean,
@@ -158,16 +214,10 @@ export function generate8StageRoute(options: RouteGeneratorOptions): GeneratedRo
   const history: ShipmentHistoryItem[] = [];
   const route_waypoints: RouteWaypoint[] = [];
 
-  let lastTimestamp = start.getTime();
+  const stageTimestamps = calculate8StageSpacedTimestamps(options.startTime, options.estimatedDeliveryDate);
 
   FEDEX_8_STAGES.forEach((item, index) => {
-    let stageMs = start.getTime() + totalDuration * stageRatios[index];
-    if (index > 0 && stageMs <= lastTimestamp) {
-      stageMs = lastTimestamp + 30 * 60 * 1000;
-    }
-    lastTimestamp = stageMs;
-
-    const timeStr = new Date(stageMs).toISOString();
+    const timeStr = stageTimestamps[index];
     const location = stageLocations[index] || originClean;
     const description = stageDescriptions[index] || item.defaultDescription;
 
@@ -224,9 +274,19 @@ export async function calculateFedExRouteWithAI(options: RouteGeneratorOptions):
     if (res.ok) {
       const data = await res.json();
       if (data.history && data.route_waypoints && data.history.length === 8) {
+        // Enforce exact Fixed Timestamp Spacing Rules across all 8 stages
+        const guaranteedTimestamps = calculate8StageSpacedTimestamps(options.startTime, options.estimatedDeliveryDate);
+        const alignedHistory = data.history.map((h: any, idx: number) => ({
+          ...h,
+          timestamp: guaranteedTimestamps[idx]
+        }));
+        const alignedWaypoints = data.route_waypoints.map((w: any, idx: number) => ({
+          ...w,
+          estimated_time: guaranteedTimestamps[idx]
+        }));
         return {
-          history: data.history,
-          route_waypoints: data.route_waypoints,
+          history: alignedHistory,
+          route_waypoints: alignedWaypoints,
           ai_generated: Boolean(data.ai_generated),
           hub_name: data.hub_name,
           routing_summary: data.routing_summary

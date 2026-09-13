@@ -71,6 +71,32 @@ export const SIGNATURE_OPTIONS = [
   'Adult',
 ];
 
+export const parseAmount = (val: any, fallback = 0): number => {
+  if (val === null || val === undefined) return fallback;
+  if (typeof val === 'number') return isNaN(val) ? fallback : val;
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (!trimmed) return fallback;
+    const cleaned = trimmed.replace(/[^0-9.-]/g, '');
+    const parsed = parseFloat(cleaned);
+    return isNaN(parsed) ? fallback : parsed;
+  }
+  return fallback;
+};
+
+export const parseCount = (val: any, fallback = 1): number => {
+  if (val === null || val === undefined) return fallback;
+  if (typeof val === 'number') return isNaN(val) ? fallback : Math.round(val);
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (!trimmed) return fallback;
+    const cleaned = trimmed.replace(/[^0-9-]/g, '');
+    const parsed = parseInt(cleaned, 10);
+    return isNaN(parsed) ? fallback : parsed;
+  }
+  return fallback;
+};
+
 export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimisticCreate, userId }: TheForgeProps) {
   const [formData, setFormData] = useState(() => {
     const saved = localStorage.getItem('forge_form_cache');
@@ -165,50 +191,113 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     setIsInitializing(true);
     setError(null);
     
-    // 1. Generate ID and Prep Data (Synchronous)
+    // 1. Core Identifiers & Required Fields:
+    // id: 12-digit tracking number string
+    // user_id: Current logged-in user UUID
+    // recipient_name: Receiver Name (string, fallback to 'Unspecified')
+    // destination_address: Delivery Address (string or null)
+    // status: 'Shipping label created'
+    // history: Array containing the initial timeline event JSON object
+    // created_at: Current ISO timestamp string
     const trackingId = generateTrackingId();
     const eventTime = formData.timeOfEntry ? new Date(formData.timeOfEntry).toISOString() : new Date().toISOString();
     
+    // 2. Sender Details:
+    // sender_name: Sender Name (string or null)
+    // sender_address: Sender Address (string or null)
+    // origin_city_state: Sender Address / Origin (string or null)
+    const senderName = formData.senderName && formData.senderName.trim() ? formData.senderName.trim() : null;
+    const senderAddress = formData.senderAddress && formData.senderAddress.trim() ? formData.senderAddress.trim() : null;
+    const originCityState = formData.originCityState && formData.originCityState.trim()
+      ? formData.originCityState.trim()
+      : (senderAddress || senderName || null);
+
+    const recipientName = formData.recipientName && formData.recipientName.trim() ? formData.recipientName.trim() : 'Unspecified';
+    const destinationAddress = formData.destinationAddress && formData.destinationAddress.trim() ? formData.destinationAddress.trim() : null;
+
     const firstHistoryEntry: ShipmentHistoryItem = {
       status_name: 'Shipping label created',
-      location: formData.senderAddress || formData.originCityState || 'Origin Facility',
+      location: originCityState || 'Origin Facility',
       timestamp: eventTime,
       description: 'Initial logistics protocol established. Tracking node active.',
     };
 
-    const isAssetMode = formData.valuationMode === 'asset';
-    const effectiveOrigin = formData.senderAddress || formData.originCityState || formData.senderName || 'Unspecified';
+    // 3. Financial & Service Settings:
+    // currency: Selected currency code (e.g., 'USD', 'EUR', 'GBP', 'NGN') — default: 'USD'
+    // service_type: Selected service name — default: 'FedEx Priority Overnight'
+    // asset_value: Numeric value (parsed float) — fallback to 0
+    // service_fee: Numeric value (parsed float) — fallback to 0
+    // declared_value: Numeric value (parsed float) — fallback to 0
+    // estimated_delivery_date: Date string formatted YYYY-MM-DD or null
+    const currency = formData.currency && formData.currency.trim() ? formData.currency.trim() : 'USD';
+    const serviceType = formData.serviceType && formData.serviceType.trim() ? formData.serviceType.trim() : 'FedEx Priority Overnight';
+    const assetValue = parseAmount(formData.assetValue, 0);
+    const serviceFee = parseAmount(formData.serviceFee, 0);
+    const declaredValue = parseAmount(formData.declaredValue, 0);
+    const estimatedDeliveryDate = formData.estimatedDeliveryDate && formData.estimatedDeliveryDate.trim()
+      ? formData.estimatedDeliveryDate.trim().slice(0, 10)
+      : null;
+
+    // 4. Package Specifications:
+    // package_type: Selected type (e.g., 'FedEx Box', 'FedEx Envelope') — default: 'Box'
+    // weight: Numeric weight (parsed float) — fallback to 0
+    // weight_unit: 'lbs' or 'kg' — default: 'lbs'
+    // length: Numeric length (parsed float) — fallback to 0
+    // width: Numeric width (parsed float) — fallback to 0
+    // height: Numeric height (parsed float) — fallback to 0
+    // dimension_unit: 'in' or 'cm' — default: 'in'
+    // num_packages: Numeric count (parsed int) — default: 1
+    const packageType = formData.packageType && formData.packageType.trim() ? formData.packageType.trim() : 'Box';
+    const weight = parseAmount(formData.weight, 0);
+    const weightUnit = formData.weightUnit && formData.weightUnit.trim() ? formData.weightUnit.trim() : 'lbs';
+    const length = parseAmount(formData.length, 0);
+    const width = parseAmount(formData.width, 0);
+    const height = parseAmount(formData.height, 0);
+    const dimensionUnit = formData.dimensionUnit && formData.dimensionUnit.trim() ? formData.dimensionUnit.trim() : 'in';
+    const numPackages = parseCount(formData.numPackages, 1);
+
+    // 5. Special Handling Options (Booleans & Strings):
+    // is_dry_ice: Boolean — default: false
+    // is_hazardous: Boolean — default: false
+    // is_saturday_delivery: Boolean — default: false
+    // signature_option: 'None', 'Direct', 'Indirect', or 'Adult' — default: 'None'
+    // is_hold_at_location: Boolean — default: false
+    const isDryIce = Boolean(formData.isDryIce);
+    const isHazardous = Boolean(formData.isHazardous);
+    const isSaturdayDelivery = Boolean(formData.isSaturdayDelivery);
+    const signatureOption = formData.signatureOption && formData.signatureOption.trim() ? formData.signatureOption.trim() : 'None';
+    const isHoldAtLocation = Boolean(formData.isHoldAtLocation);
 
     const dbPayload = {
       id: trackingId,
       user_id: userId,
-      sender_name: formData.senderName ? formData.senderName.trim() : null,
-      sender_address: formData.senderAddress ? formData.senderAddress.trim() : null,
-      recipient_name: formData.recipientName ? formData.recipientName.trim() : 'Unspecified',
-      destination_address: formData.destinationAddress ? formData.destinationAddress.trim() : 'Unspecified',
-      origin_city_state: effectiveOrigin,
-      currency: formData.currency || 'USD',
-      service_type: formData.serviceType || 'FedEx Priority Overnight',
-      asset_value: isAssetMode ? (parseFloat(formData.assetValue) || 0) : 0,
-      service_fee: parseFloat(formData.serviceFee) || 0,
-      estimated_delivery_date: formData.estimatedDeliveryDate || null,
+      recipient_name: recipientName,
+      destination_address: destinationAddress,
+      origin_city_state: originCityState,
+      asset_value: assetValue,
+      service_fee: serviceFee,
       status: 'Shipping label created' as ShipmentStatus,
-      created_at: eventTime,
       history: [firstHistoryEntry],
-      package_type: isAssetMode ? null : (formData.packageType || 'FedEx Box (Small/Medium/Large)'),
-      weight: isAssetMode ? 0 : (parseFloat(formData.weight) || 0),
-      weight_unit: isAssetMode ? null : (formData.weightUnit || 'lbs'),
-      length: isAssetMode ? 0 : (parseFloat(formData.length) || 0),
-      width: isAssetMode ? 0 : (parseFloat(formData.width) || 0),
-      height: isAssetMode ? 0 : (parseFloat(formData.height) || 0),
-      dimension_unit: isAssetMode ? null : (formData.dimensionUnit || 'in'),
-      num_packages: isAssetMode ? 0 : (parseInt(formData.numPackages) || 1),
-      declared_value: isAssetMode ? 0 : (parseFloat(formData.declaredValue) || 0),
-      is_dry_ice: Boolean(formData.isDryIce),
-      is_hazardous: Boolean(formData.isHazardous),
-      is_saturday_delivery: Boolean(formData.isSaturdayDelivery),
-      signature_option: formData.signatureOption || 'None',
-      is_hold_at_location: Boolean(formData.isHoldAtLocation),
+      estimated_delivery_date: estimatedDeliveryDate,
+      created_at: eventTime,
+      package_type: packageType,
+      weight,
+      length,
+      width,
+      height,
+      num_packages: numPackages,
+      sender_name: senderName,
+      sender_address: senderAddress,
+      currency,
+      service_type: serviceType,
+      weight_unit: weightUnit,
+      dimension_unit: dimensionUnit,
+      declared_value: declaredValue,
+      is_dry_ice: isDryIce,
+      is_hazardous: isHazardous,
+      is_saturday_delivery: isSaturdayDelivery,
+      signature_option: signatureOption,
+      is_hold_at_location: isHoldAtLocation,
     };
 
     const newShipment: Shipment = {

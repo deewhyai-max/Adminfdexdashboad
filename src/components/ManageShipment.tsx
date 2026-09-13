@@ -30,7 +30,9 @@ import {
   SERVICE_TYPE_OPTIONS, 
   PACKAGE_TYPE_OPTIONS, 
   SIGNATURE_OPTIONS,
-  getCurrencySymbol 
+  getCurrencySymbol,
+  parseAmount,
+  parseCount
 } from './TheForge';
 
 interface ManageShipmentProps {
@@ -149,30 +151,30 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
       // ------------------------------------
 
       const updatedData: any = {
-        recipient_name: recipient ? recipient.trim() : 'Unspecified',
-        destination_address: address ? address.trim() : 'Unspecified',
-        origin_city_state: origin ? origin.trim() : (senderAddress || senderName || 'Unspecified'),
-        sender_name: senderName ? senderName.trim() : null,
-        sender_address: senderAddress ? senderAddress.trim() : null,
-        currency: currency || 'USD',
-        service_type: serviceType || 'FedEx Priority Overnight',
-        asset_value: parseFloat(valuation) || 0,
-        service_fee: parseFloat(fee) || 0,
+        recipient_name: recipient && recipient.trim() ? recipient.trim() : 'Unspecified',
+        destination_address: address && address.trim() ? address.trim() : null,
+        origin_city_state: origin && origin.trim() ? origin.trim() : (senderAddress && senderAddress.trim() ? senderAddress.trim() : (senderName && senderName.trim() ? senderName.trim() : null)),
+        sender_name: senderName && senderName.trim() ? senderName.trim() : null,
+        sender_address: senderAddress && senderAddress.trim() ? senderAddress.trim() : null,
+        currency: currency && currency.trim() ? currency.trim() : 'USD',
+        service_type: serviceType && serviceType.trim() ? serviceType.trim() : 'FedEx Priority Overnight',
+        asset_value: parseAmount(valuation, 0),
+        service_fee: parseAmount(fee, 0),
         created_at: entryTime ? new Date(entryTime).toISOString() : shipment.created_at,
-        estimated_delivery_date: deliveryDate || null,
-        package_type: packageType || null,
-        weight: parseFloat(weight) || 0,
-        weight_unit: weightUnit || 'lbs',
-        length: parseFloat(length) || 0,
-        width: parseFloat(width) || 0,
-        height: parseFloat(height) || 0,
-        dimension_unit: dimensionUnit || 'in',
-        num_packages: parseInt(numPackages) || 1,
-        declared_value: parseFloat(declaredValue) || 0,
+        estimated_delivery_date: deliveryDate && deliveryDate.trim() ? deliveryDate.trim().slice(0, 10) : null,
+        package_type: packageType && packageType.trim() ? packageType.trim() : 'Box',
+        weight: parseAmount(weight, 0),
+        weight_unit: weightUnit && weightUnit.trim() ? weightUnit.trim() : 'lbs',
+        length: parseAmount(length, 0),
+        width: parseAmount(width, 0),
+        height: parseAmount(height, 0),
+        dimension_unit: dimensionUnit && dimensionUnit.trim() ? dimensionUnit.trim() : 'in',
+        num_packages: parseCount(numPackages, 1),
+        declared_value: parseAmount(declaredValue, 0),
         is_dry_ice: Boolean(isDryIce),
         is_hazardous: Boolean(isHazardous),
         is_saturday_delivery: Boolean(isSaturdayDelivery),
-        signature_option: signatureOption || 'None',
+        signature_option: signatureOption && signatureOption.trim() ? signatureOption.trim() : 'None',
         is_hold_at_location: Boolean(isHoldAtLocation)
       };
 

@@ -34,7 +34,8 @@ import {
   Sliders,
   ChevronDown,
   ChevronUp,
-  Sparkles
+  Sparkles,
+  Barcode
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Shipment, ShipmentStatus, ShipmentHistoryItem, RouteWaypoint } from '../types';
@@ -79,11 +80,13 @@ export const SERVICE_TYPE_OPTIONS = [
 ];
 
 export const PACKAGE_TYPE_OPTIONS = [
+  'Box',
+  'FedEx Box (Small/Medium/Large)',
   'FedEx Envelope',
   'FedEx Pak',
-  'FedEx Box (Small/Medium/Large)',
   'FedEx Tube',
   'Your Packaging (custom box)',
+  'Pallet / Freight',
 ];
 
 export const SIGNATURE_OPTIONS = [
@@ -106,7 +109,7 @@ export const parseAmount = (val: any, fallback = 0): number => {
   return fallback;
 };
 
-export const parseCount = (val: any, fallback = 1): number => {
+export const parseCount = (val: any, fallback = 0): number => {
   if (val === null || val === undefined) return fallback;
   if (typeof val === 'number') return isNaN(val) ? fallback : Math.round(val);
   if (typeof val === 'string') {
@@ -117,6 +120,16 @@ export const parseCount = (val: any, fallback = 1): number => {
     return isNaN(parsed) ? fallback : parsed;
   }
   return fallback;
+};
+
+// Generates an authentic fresh 12-digit FedEx tracking ID (non-zero leading digit)
+export const generateTrackingId = (): string => {
+  return Math.floor(100000000000 + Math.random() * 900000000000).toString();
+};
+
+export const formatTrackingId = (id: string): string => {
+  if (!id) return '';
+  return id.replace(/(\d{4})(\d{4})(\d{4})/, '$1 $2 $3');
 };
 
 export const getInitialFormData = () => ({
@@ -130,14 +143,14 @@ export const getInitialFormData = () => ({
   valuationMode: 'asset' as 'asset' | 'package',
   assetValue: '',
   serviceFee: '',
-  packageType: 'FedEx Box (Small/Medium/Large)',
+  packageType: 'Box',
   weight: '',
   weightUnit: 'lbs' as 'lbs' | 'kg',
   length: '',
   width: '',
   height: '',
   dimensionUnit: 'in' as 'in' | 'cm',
-  numPackages: '1',
+  numPackages: '0',
   declaredValue: '',
   isDryIce: false,
   isHazardous: false,
@@ -152,6 +165,8 @@ export const getInitialFormData = () => ({
 
 export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimisticCreate, userId }: TheForgeProps) {
   const [formData, setFormData] = useState(getInitialFormData);
+  const [trackingId, setTrackingId] = useState<string>(generateTrackingId);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle');
   const [successData, setSuccessData] = useState<{ trackingId: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [isInitializing, setIsInitializing] = useState(false);
@@ -168,9 +183,12 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
   const [aiRoutingSummary, setAiRoutingSummary] = useState<string | null>(null);
   const [isAiGenerated, setIsAiGenerated] = useState<boolean>(false);
 
-  // Full form reset: Clears all input fields, history, route_waypoints, dimensions, hold/advance flags
-  const resetForm = useCallback(() => {
+  // Central State Flushing Function: explicitly resets EVERY single state variable to factory defaults
+  const resetAllShipmentFormState = useCallback((clearSuccess = true) => {
+    // 1. Reset all form inputs to factory defaults
     setFormData(getInitialFormData());
+
+    // 2. Reset timeline history, route waypoints, and AI logistics routing state
     setMilestones([]);
     setRouteWaypoints([]);
     setIsRouteGenerated(false);
@@ -180,22 +198,45 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     setAiHubName(null);
     setAiRoutingSummary(null);
     setIsAiGenerated(false);
+
+    // 3. Reset error and UI feedback states
     setError(null);
-    setSuccessData(null);
+    setSaveStatus('idle');
     setCopied(false);
+
+    // 4. Auto-generate a brand-new, unique 12-digit tracking ID
+    const freshId = generateTrackingId();
+    setTrackingId(freshId);
+
+    // 5. Clear success overlay if requested
+    if (clearSuccess) {
+      setSuccessData(null);
+    }
+
+    // 6. Hard-flush any persisted form cache, AI route buffers, or temp waypoint state
     try {
       localStorage.removeItem('forge_form_cache');
+      localStorage.removeItem('forge_route_cache');
+      sessionStorage.removeItem('forge_form_cache');
+      sessionStorage.removeItem('forge_route_cache');
     } catch {
       // ignore
     }
   }, []);
 
-  // Form Reset on Init: Reset immediately whenever modal opens or initializes
+  // Trigger Hook 1: Modal Open Trigger - Execute resetAllShipmentFormState() immediately when modal opens
   useEffect(() => {
     if (isOpen) {
-      resetForm();
+      resetAllShipmentFormState(true);
     }
-  }, [isOpen, resetForm]);
+  }, [isOpen, resetAllShipmentFormState]);
+
+  // Trigger Hook 2: Form Unmount Trigger - Clean up memory and prevent stale state retention on unmount
+  useEffect(() => {
+    return () => {
+      resetAllShipmentFormState(true);
+    };
+  }, [resetAllShipmentFormState]);
 
   const handleGenerateRoute = async () => {
     setIsCalculatingRoute(true);
@@ -255,37 +296,21 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     }
   };
 
-  const generateTrackingId = () => {
-    return Math.floor(Math.random() * 1000000000000).toString().padStart(12, '0');
-  };
-
-  const formatTrackingId = (id: string) => {
-    return id.replace(/(\d{4})(\d{4})(\d{4})/, '$1 $2 $3');
-  };
-
   const selectedCurrency = CURRENCY_OPTIONS.find(c => c.code === formData.currency) || CURRENCY_OPTIONS[0];
   const currencySymbol = selectedCurrency.symbol;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsInitializing(true);
+    setSaveStatus('saving');
     setError(null);
     
     // 1. Core Identifiers & Required Fields:
-    // id: 12-digit tracking number string
-    // user_id: Current logged-in user UUID
-    // recipient_name: Receiver Name (string, fallback to 'Unspecified')
-    // destination_address: Delivery Address (string or null)
-    // status: 'Shipping label created'
-    // history: Array containing the initial timeline event JSON object
-    // created_at: Current ISO timestamp string
-    const trackingId = generateTrackingId();
+    // Use the freshly auto-generated 12-digit tracking ID
+    const activeTrackingId = trackingId || generateTrackingId();
     const eventTime = formData.timeOfEntry ? new Date(formData.timeOfEntry).toISOString() : new Date().toISOString();
     
     // 2. Sender Details:
-    // sender_name: Sender Name (string or null)
-    // sender_address: Sender Address (string or null)
-    // origin_city_state: Sender Address / Origin (string or null)
     const senderName = formData.senderName && formData.senderName.trim() ? formData.senderName.trim() : null;
     const senderAddress = formData.senderAddress && formData.senderAddress.trim() ? formData.senderAddress.trim() : null;
     const originCityState = formData.originCityState && formData.originCityState.trim()
@@ -313,7 +338,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     const width = parseAmount(formData.width, 0);
     const height = parseAmount(formData.height, 0);
     const dimensionUnit = formData.dimensionUnit && formData.dimensionUnit.trim() ? formData.dimensionUnit.trim() : 'in';
-    const numPackages = parseCount(formData.numPackages, 1);
+    const numPackages = parseCount(formData.numPackages, 0);
 
     // 5. Special Handling Options:
     const isDryIce = Boolean(formData.isDryIce);
@@ -326,48 +351,49 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     let finalHistory = milestones;
     let finalWaypoints = routeWaypoints;
     if (!finalHistory || finalHistory.length !== 8) {
-      const plan = await calculateFedExRouteWithAI({
-        origin: originCityState || senderAddress || 'Origin Facility',
-        senderAddress: senderAddress || undefined,
-        destination: destinationAddress || 'Destination Address',
-        recipientName: recipientName,
-        senderName: senderName || undefined,
-        serviceType: serviceType,
-        packageType: packageType,
-        weight: weight,
-        weightUnit: weightUnit,
-        startTime: eventTime,
-        estimatedDeliveryDate: estimatedDeliveryDate || undefined,
-        isDryIce: isDryIce,
-        isHazardous: isHazardous,
-        isSaturdayDelivery: isSaturdayDelivery
-      });
-      finalHistory = plan.history;
-      finalWaypoints = plan.route_waypoints;
+      try {
+        const plan = await calculateFedExRouteWithAI({
+          origin: originCityState || senderAddress || 'Origin Facility',
+          senderAddress: senderAddress || undefined,
+          destination: destinationAddress || 'Destination Address',
+          recipientName: recipientName,
+          senderName: senderName || undefined,
+          serviceType: serviceType,
+          packageType: packageType,
+          weight: weight,
+          weightUnit: weightUnit,
+          startTime: eventTime,
+          estimatedDeliveryDate: estimatedDeliveryDate || undefined,
+          isDryIce: isDryIce,
+          isHazardous: isHazardous,
+          isSaturdayDelivery: isSaturdayDelivery
+        });
+        finalHistory = plan.history;
+        finalWaypoints = plan.route_waypoints;
+      } catch (calcErr) {
+        console.warn('Fallback routing calculation triggered:', calcErr);
+      }
     }
 
     // Strictly enforce Fixed Timestamp Spacing Rules before saving to Supabase:
-    // Stage 1 = NOW() (the exact creation timestamp)
-    // Stages 2-7 = evenly divided future timestamps spaced across duration
-    // Stage 8 = target arrival on estimated_delivery_date
     const nowIso = new Date().toISOString();
     const guaranteedTimestamps = calculate8StageSpacedTimestamps(nowIso, estimatedDeliveryDate || undefined);
 
-    // Apply spaced timestamps to history and waypoints, preserving custom manual adjustments
-    finalHistory = finalHistory.map((item, idx) => ({
+    // Apply spaced timestamps to history and waypoints
+    finalHistory = (finalHistory || []).map((item, idx) => ({
       ...item,
-      timestamp: guaranteedTimestamps[idx]
+      timestamp: guaranteedTimestamps[idx] || nowIso
     }));
-    finalWaypoints = (finalWaypoints && finalWaypoints.length === 8 ? finalWaypoints : finalHistory).map((item, idx) => ({
+    finalWaypoints = ((finalWaypoints && finalWaypoints.length === 8 ? finalWaypoints : finalHistory) || []).map((item, idx) => ({
       ...item,
-      estimated_time: guaranteedTimestamps[idx]
+      estimated_time: guaranteedTimestamps[idx] || nowIso
     }));
 
     const isOnHold = Boolean(formData.isOnHold);
     const autoAdvance = Boolean(formData.autoAdvance);
 
     const dbPayload = {
-      id: trackingId,
+      id: activeTrackingId,
       user_id: userId,
       recipient_name: recipientName,
       destination_address: destinationAddress,
@@ -405,77 +431,68 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       ...dbPayload
     };
 
-    // 2. IMMEDIATE REVEAL (Zero Delay)
-    setSuccessData({ trackingId });
-    onOptimisticCreate(newShipment);
-    onShipmentCreated();
-    
-    // Trigger full form reset on successful shipment creation:
-    // Ensures history, route_waypoints, is_on_hold, and package dimensions do NOT carry over from previous records
-    setFormData(getInitialFormData());
-    setMilestones([]);
-    setRouteWaypoints([]);
-    setIsRouteGenerated(false);
-    setShowMilestonesEditor(false);
-    setEditingMilestoneIdx(null);
-    setIsCalculatingRoute(false);
-    setAiHubName(null);
-    setAiRoutingSummary(null);
-    setIsAiGenerated(false);
-    setError(null);
+    // Save directly to Supabase with session confirmation
     try {
-      localStorage.removeItem('forge_form_cache');
-    } catch {
-      // ignore
-    }
-    
-    // 3. BACKGROUND SYNC (Session check + Insert with Schema Graceful Fallback)
-    (async () => {
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session) {
-          const { data: { user: recoveredUser }, error: recoveryError } = await supabase.auth.getUser();
-          if (recoveryError || !recoveredUser) {
-            console.error("Delayed Sync: No session found.");
-            return;
-          }
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        const { data: { user: recoveredUser }, error: recoveryError } = await supabase.auth.getUser();
+        if (recoveryError || !recoveredUser) {
+          throw new Error("Authentication session missing. Please sign in to initialize shipments.");
         }
-        
-        const { error: insertError } = await supabase.from('shipments').insert([dbPayload]);
-        if (insertError) {
-          console.warn('Initial insert warning, checking if migration fallback needed:', insertError.message);
-          // If table columns have not been migrated yet, safely fallback to core schema fields
-          if (insertError.message && (insertError.message.includes('column') || insertError.code === 'PGRST204')) {
-            const fallbackPayload = {
-              id: trackingId,
-              user_id: userId,
-              recipient_name: dbPayload.recipient_name,
-              destination_address: dbPayload.destination_address,
-              origin_city_state: dbPayload.origin_city_state,
-              asset_value: dbPayload.asset_value,
-              service_fee: dbPayload.service_fee,
-              estimated_delivery_date: dbPayload.estimated_delivery_date,
-              status: dbPayload.status,
-              created_at: dbPayload.created_at,
-              history: dbPayload.history,
-              package_type: dbPayload.package_type,
-              weight: dbPayload.weight,
-              length: dbPayload.length,
-              width: dbPayload.width,
-              height: dbPayload.height,
-              num_packages: dbPayload.num_packages,
-              is_on_hold: dbPayload.is_on_hold,
-              auto_advance: dbPayload.auto_advance,
-            };
-            await supabase.from('shipments').insert([fallbackPayload]);
-          }
-        }
-      } catch (err) {
-        console.error('Background Persistence failure:', err);
-      } finally {
-        setIsInitializing(false);
       }
-    })();
+
+      const { error: insertError } = await supabase.from('shipments').insert([dbPayload]);
+      if (insertError) {
+        console.warn('Initial Supabase insert warning, evaluating schema fallback:', insertError.message);
+        // If optional extended columns are not yet provisioned in this environment's schema, gracefully fallback
+        if (insertError.message && (insertError.message.includes('column') || insertError.code === 'PGRST204')) {
+          const fallbackPayload = {
+            id: activeTrackingId,
+            user_id: userId,
+            recipient_name: dbPayload.recipient_name,
+            destination_address: dbPayload.destination_address,
+            origin_city_state: dbPayload.origin_city_state,
+            asset_value: dbPayload.asset_value,
+            service_fee: dbPayload.service_fee,
+            estimated_delivery_date: dbPayload.estimated_delivery_date,
+            status: dbPayload.status,
+            created_at: dbPayload.created_at,
+            history: dbPayload.history,
+            package_type: dbPayload.package_type,
+            weight: dbPayload.weight,
+            length: dbPayload.length,
+            width: dbPayload.width,
+            height: dbPayload.height,
+            num_packages: dbPayload.num_packages,
+            is_on_hold: dbPayload.is_on_hold,
+            auto_advance: dbPayload.auto_advance,
+          };
+          const { error: fallbackError } = await supabase.from('shipments').insert([fallbackPayload]);
+          if (fallbackError) {
+            throw fallbackError;
+          }
+        } else {
+          throw insertError;
+        }
+      }
+
+      // Success confirmation: Mark saved and reveal confirmation overlay
+      setSaveStatus('saved');
+      setSuccessData({ trackingId: activeTrackingId });
+      onOptimisticCreate(newShipment);
+      onShipmentCreated();
+
+      // Trigger Hook 3: Post-Submission Trigger
+      // Execute resetAllShipmentFormState() immediately upon a successful Supabase insert before closing the modal
+      // Note: Passing false keeps successData visible for the user to view/copy the freshly saved ID
+      resetAllShipmentFormState(false);
+    } catch (err: any) {
+      console.error('Supabase shipment save failed:', err);
+      setSaveStatus('failed');
+      setError(`Shipment could not be saved to Supabase: ${err?.message || 'Database error'}`);
+    } finally {
+      setIsInitializing(false);
+    }
   };
 
   const handleCopy = () => {
@@ -487,12 +504,12 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
   };
 
   const handleResetAndClose = () => {
-    resetForm();
+    resetAllShipmentFormState(true);
     onClose();
   };
 
   const handleClose = () => {
-    resetForm();
+    resetAllShipmentFormState(true);
     onClose();
   };
 
@@ -546,6 +563,31 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                 )}
                 
                 <div className="grid grid-cols-1 gap-6">
+
+                  {/* Auto-Generated 12-Digit Tracking ID Header */}
+                  <div className="bg-gradient-to-r from-purple-50/90 via-slate-50 to-orange-50/50 border border-fedex-purple/20 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+                    <div className="space-y-0.5">
+                      <span className="text-[9px] font-black text-fedex-purple uppercase tracking-[0.2em] flex items-center gap-1.5">
+                        <Barcode className="w-3.5 h-3.5" /> Assigned 12-Digit Tracking Identifier
+                      </span>
+                      <p className="text-xl font-black text-slate-900 font-mono tracking-wider">
+                        {formatTrackingId(trackingId)}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="px-2.5 py-1 rounded-full bg-purple-100 text-fedex-purple text-[9px] font-black uppercase tracking-wider">
+                        Auto-Generated Fresh
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setTrackingId(generateTrackingId())}
+                        className="px-2.5 py-1 rounded-lg bg-white border border-fedex-purple/30 hover:bg-fedex-purple hover:text-white text-fedex-purple text-[10px] font-black uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer shadow-xs active:scale-95"
+                        title="Generate another fresh 12-digit Tracking ID"
+                      >
+                        <RefreshCw className="w-3 h-3" /> New ID
+                      </button>
+                    </div>
+                  </div>
 
                   {/* 1. Service Type & Currency Header Section */}
                   <div className="space-y-4 bg-slate-50/70 border border-slate-200/80 rounded-2xl p-5">
@@ -1339,15 +1381,15 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                   <button
                     type="submit"
                     disabled={isInitializing}
-                    className="w-full bg-fedex-orange hover:bg-orange-600 text-white font-black py-5 rounded-2xl transition-all active:scale-[0.98] shadow-xl shadow-fedex-orange/20 flex items-center justify-center gap-3 uppercase tracking-widest disabled:opacity-50 text-sm"
+                    className="w-full bg-fedex-orange hover:bg-orange-600 text-white font-black py-5 rounded-2xl transition-all active:scale-[0.98] shadow-xl shadow-fedex-orange/20 flex items-center justify-center gap-3 uppercase tracking-widest disabled:opacity-50 text-sm cursor-pointer"
                   >
                     {isInitializing ? (
                       <div className="flex items-center gap-2">
                         <Activity className="w-4 h-4 animate-spin" />
-                        Synchronizing Cloud...
+                        Saving to Supabase Database...
                       </div>
                     ) : (
-                      <><Package className="w-5 h-5" /> Generate Tracking ID <ArrowRight className="w-5 h-5" /></>
+                      <><Package className="w-5 h-5" /> Initialize & Save Shipment <ArrowRight className="w-5 h-5" /></>
                     )}
                   </button>
                 </div>
@@ -1363,24 +1405,41 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                     transition={{ type: 'spring', damping: 20, stiffness: 300 }}
                     className="absolute inset-0 bg-white z-20 flex flex-col items-center justify-center p-8 text-center"
                   >
-                    <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mb-6">
-                      <Check className="text-green-600 w-10 h-10" />
+                    <div className="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center mb-4">
+                      <Check className="text-emerald-600 w-10 h-10" />
                     </div>
+
+                    {/* Prominent Save Confirmation Badge */}
+                    {saveStatus === 'saved' ? (
+                      <div className="inline-flex items-center gap-2 bg-emerald-500 text-white px-5 py-2 rounded-full text-xs font-black uppercase tracking-widest mb-3 shadow-lg shadow-emerald-500/25">
+                        <Check className="w-4 h-4" />
+                        Shipment saved
+                      </div>
+                    ) : (
+                      <div className="inline-flex items-center gap-2 bg-amber-500 text-white px-5 py-2 rounded-full text-xs font-black uppercase tracking-widest mb-3 shadow-lg shadow-amber-500/25">
+                        <AlertTriangle className="w-4 h-4" />
+                        Shipment status: {saveStatus}
+                      </div>
+                    )}
                     
                     <h3 className="text-fedex-orange font-black text-2xl uppercase tracking-tight mb-2">
                       Shipment Initialized
                     </h3>
-                    <p className="text-slate-500 text-sm mb-10">Tracking ID generated and logged to global registry.</p>
+                    <p className="text-slate-500 text-xs md:text-sm mb-8 font-medium">
+                      {saveStatus === 'saved'
+                        ? 'Shipment saved successfully to Supabase cloud database.'
+                        : 'Tracking ID generated and logged to global registry.'}
+                    </p>
 
                     <div className="bg-slate-50 border border-slate-100 rounded-2xl p-8 w-full mb-8">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em] block mb-6">Tracking Identifier</span>
-                      <div className="flex flex-col md:flex-row items-center justify-center gap-6">
-                        <span className="text-4xl md:text-5xl font-black text-slate-900 font-mono tracking-tighter">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em] block mb-4">Assigned Tracking Identifier</span>
+                      <div className="flex flex-col md:flex-row items-center justify-center gap-4">
+                        <span className="text-3xl md:text-4xl font-black text-slate-900 font-mono tracking-tighter">
                           {formatTrackingId(successData.trackingId)}
                         </span>
                         <button
                           onClick={handleCopy}
-                          className={`flex items-center gap-2 px-6 py-3 rounded-xl font-bold text-xs uppercase tracking-widest transition-all shrink-0 ${
+                          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-xs uppercase tracking-widest transition-all shrink-0 cursor-pointer ${
                             copied 
                               ? 'bg-green-500 text-white' 
                               : 'bg-fedex-purple text-white hover:bg-purple-700 shadow-lg shadow-fedex-purple/20'
@@ -1394,7 +1453,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
 
                     <button
                       onClick={handleResetAndClose}
-                      className="w-full border-2 border-slate-900 text-slate-900 hover:bg-slate-900 hover:text-white font-black py-5 rounded-2xl transition-all uppercase tracking-widest text-sm"
+                      className="w-full border-2 border-slate-900 text-slate-900 hover:bg-slate-900 hover:text-white font-black py-4 rounded-2xl transition-all uppercase tracking-widest text-xs md:text-sm cursor-pointer"
                     >
                       Done
                     </button>

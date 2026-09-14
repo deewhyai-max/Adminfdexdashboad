@@ -39,6 +39,9 @@ import {
   calculateFedExRouteWithAI, 
   calculate8StageSpacedTimestamps,
   evaluateShipmentMilestones,
+  deduplicateAndEnforce8Stages,
+  advanceShipmentToStage,
+  CANONICAL_STAGE_ORDER,
   FEDEX_8_STAGES 
 } from '../utils/routeGenerator';
 import { 
@@ -114,7 +117,16 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
   // Automation & 8-Stage Milestone Route State
   const [autoAdvance, setAutoAdvance] = useState(shipment?.auto_advance !== false);
   const [isOnHold, setIsOnHold] = useState(Boolean(shipment?.is_on_hold));
-  const [milestones, setMilestones] = useState<ShipmentHistoryItem[]>(shipment?.history || []);
+  const [milestones, setMilestones] = useState<ShipmentHistoryItem[]>(() => {
+    return deduplicateAndEnforce8Stages(shipment?.history, {
+      origin: shipment?.origin_city_state || undefined,
+      destination: shipment?.destination_address || undefined,
+      senderName: shipment?.sender_name || undefined,
+      recipientName: shipment?.recipient_name || undefined,
+      serviceType: shipment?.service_type || undefined,
+      estimatedDeliveryDate: shipment?.estimated_delivery_date || undefined
+    });
+  });
   const [routeWaypoints, setRouteWaypoints] = useState<RouteWaypoint[]>(shipment?.route_waypoints || []);
   const [editingMilestoneIdx, setEditingMilestoneIdx] = useState<number | null>(null);
   const [showMilestoneEngine, setShowMilestoneEngine] = useState(false);
@@ -157,8 +169,23 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
       setSignatureOption(shipment.signature_option || 'None');
       setAutoAdvance(shipment.auto_advance !== false);
       setIsOnHold(Boolean(shipment.is_on_hold));
-      setMilestones(shipment.history || []);
-      setRouteWaypoints(shipment.route_waypoints || []);
+
+      const cleanHistory = deduplicateAndEnforce8Stages(shipment.history, {
+        origin: shipment.origin_city_state || undefined,
+        destination: shipment.destination_address || undefined,
+        senderName: shipment.sender_name || undefined,
+        recipientName: shipment.recipient_name || undefined,
+        serviceType: shipment.service_type || undefined,
+        estimatedDeliveryDate: shipment.estimated_delivery_date || undefined
+      });
+      setMilestones(cleanHistory);
+      setRouteWaypoints(cleanHistory.map((item, idx) => ({
+        stage: idx + 1,
+        stage_name: item.status_name,
+        location: item.location,
+        estimated_time: item.timestamp,
+        description: item.description
+      })));
     }
   }, [shipment]);
 
@@ -289,22 +316,53 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
     setIsSavingMilestones(true);
     setMilestonesSuccess(false);
     try {
-      const { error: mError } = await supabase
+      const cleanedMilestones = deduplicateAndEnforce8Stages(milestones, {
+        origin: origin || senderAddress || shipment?.origin_city_state,
+        destination: address || shipment?.destination_address,
+        senderName: senderName || shipment?.sender_name,
+        recipientName: recipient || shipment?.recipient_name,
+        serviceType: serviceType || shipment?.service_type,
+        estimatedDeliveryDate: deliveryDate || shipment?.estimated_delivery_date
+      });
+
+      const cleanedWaypoints: RouteWaypoint[] = cleanedMilestones.map((item, idx) => ({
+        stage: idx + 1,
+        stage_name: item.status_name,
+        location: item.location,
+        estimated_time: item.timestamp,
+        description: item.description
+      }));
+
+      const payload: any = {
+        history: cleanedMilestones,
+        route_waypoints: cleanedWaypoints,
+        auto_advance: autoAdvance,
+        is_on_hold: isOnHold
+      };
+
+      let { error: mError } = await supabase
         .from('shipments')
-        .update({
-          history: milestones,
-          route_waypoints: routeWaypoints,
-          auto_advance: autoAdvance,
-          is_on_hold: isOnHold
-        })
+        .update(payload)
         .eq('id', shipment.id)
         .eq('user_id', userId);
+
+      if (mError && (mError.message?.includes('is_on_hold') || mError.message?.includes('route_waypoints') || mError.message?.includes('auto_advance'))) {
+        delete payload.is_on_hold;
+        delete payload.route_waypoints;
+        delete payload.auto_advance;
+        const res = await supabase.from('shipments').update(payload).eq('id', shipment.id).eq('user_id', userId);
+        mError = res.error;
+      }
+
       if (mError) throw mError;
+
+      setMilestones(cleanedMilestones);
+      setRouteWaypoints(cleanedWaypoints);
 
       onUpdate({
         ...shipment,
-        history: milestones,
-        route_waypoints: routeWaypoints,
+        history: cleanedMilestones,
+        route_waypoints: cleanedWaypoints,
         auto_advance: autoAdvance,
         is_on_hold: isOnHold
       });
@@ -312,6 +370,77 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
       setTimeout(() => setMilestonesSuccess(false), 2500);
     } catch (err) {
       console.error('Milestone save failure:', err);
+    } finally {
+      setIsSavingMilestones(false);
+    }
+  };
+
+  const handleDirectStageAdvance = async (stageStatus: ShipmentStatus) => {
+    setIsSavingMilestones(true);
+    setMilestonesSuccess(false);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        const { data: { user: recoveredUser }, error: recoveryError } = await supabase.auth.getUser();
+        if (recoveryError || !recoveredUser) throw new Error('Administrative link broken. Re-login required.');
+      }
+
+      const effectiveHistory = milestones.length === 8 ? milestones : (shipment.history || []);
+      const nowIso = new Date().toISOString();
+      const { history: updatedHistory, route_waypoints: updatedWaypoints } = advanceShipmentToStage(
+        effectiveHistory,
+        stageStatus,
+        {
+          manualTimestamp: nowIso,
+          estimatedDeliveryDate: deliveryDate || shipment.estimated_delivery_date || undefined,
+          origin: origin || senderAddress || shipment.origin_city_state || undefined,
+          destination: address || shipment.destination_address || undefined,
+          senderName: senderName || shipment.sender_name || undefined,
+          recipientName: recipient || shipment.recipient_name || undefined,
+          serviceType: serviceType || shipment.service_type || undefined
+        }
+      );
+
+      const isHold = stageStatus === 'On Hold';
+      const payload: any = {
+        status: stageStatus,
+        history: updatedHistory,
+        route_waypoints: updatedWaypoints,
+        is_on_hold: isHold
+      };
+
+      let { error: updateError } = await supabase
+        .from('shipments')
+        .update(payload)
+        .eq('id', shipment.id)
+        .eq('user_id', userId);
+
+      if (updateError && (updateError.message?.includes('is_on_hold') || updateError.message?.includes('route_waypoints'))) {
+        delete payload.is_on_hold;
+        delete payload.route_waypoints;
+        const res = await supabase.from('shipments').update(payload).eq('id', shipment.id).eq('user_id', userId);
+        updateError = res.error;
+      }
+
+      if (updateError) throw updateError;
+
+      setNewStatus(stageStatus);
+      setMilestones(updatedHistory);
+      setRouteWaypoints(updatedWaypoints);
+      setIsOnHold(isHold);
+
+      onUpdate({
+        ...shipment,
+        status: stageStatus,
+        is_on_hold: isHold,
+        history: updatedHistory,
+        route_waypoints: updatedWaypoints
+      });
+
+      setMilestonesSuccess(true);
+      setTimeout(() => setMilestonesSuccess(false), 2500);
+    } catch (err) {
+      console.error('Direct stage advance error:', err);
     } finally {
       setIsSavingMilestones(false);
     }
@@ -420,15 +549,6 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
     setIsSaving(true);
     setShowSuccess(false);
 
-    const newHistoryItem = {
-      timestamp: updateTime ? new Date(updateTime).toISOString() : new Date().toISOString(),
-      status_name: newStatus,
-      location: location || 'Transit Node',
-      description: description || `Operational status shifted to ${newStatus}`,
-    };
-
-    const updatedHistory = [newHistoryItem, ...shipment.history];
-
     try {
       // --- SESSION CHECK-FIRST PROTOCOL ---
       const { data: { session } } = await supabase.auth.getSession();
@@ -439,21 +559,60 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
       }
       // ------------------------------------
 
-      const { error: updateError } = await supabase
+      // Strict Fixed 8-Stage Single Array Rule:
+      // Never append (.push()) new stages. Map/advance within the canonical 8 stages.
+      const effectiveHistory = milestones.length === 8 ? milestones : (shipment.history || []);
+      const manualTs = updateTime ? new Date(updateTime).toISOString() : new Date().toISOString();
+
+      const { history: updatedHistory, route_waypoints: updatedWaypoints } = advanceShipmentToStage(
+        effectiveHistory,
+        newStatus,
+        {
+          manualTimestamp: manualTs,
+          estimatedDeliveryDate: deliveryDate || shipment.estimated_delivery_date || undefined,
+          location: location || undefined,
+          description: description || undefined,
+          origin: origin || senderAddress || shipment.origin_city_state || undefined,
+          destination: address || shipment.destination_address || undefined,
+          senderName: senderName || shipment.sender_name || undefined,
+          recipientName: recipient || shipment.recipient_name || undefined,
+          serviceType: serviceType || shipment.service_type || undefined
+        }
+      );
+
+      const isHold = newStatus === 'On Hold';
+      const payload: any = {
+        status: newStatus,
+        history: updatedHistory,
+        route_waypoints: updatedWaypoints,
+        is_on_hold: isHold
+      };
+
+      let { error: updateError } = await supabase
         .from('shipments')
-        .update({
-          status: newStatus,
-          history: updatedHistory
-        })
+        .update(payload)
         .eq('id', shipment.id)
         .eq('user_id', userId);
 
+      if (updateError && (updateError.message?.includes('is_on_hold') || updateError.message?.includes('route_waypoints'))) {
+        delete payload.is_on_hold;
+        delete payload.route_waypoints;
+        const res = await supabase.from('shipments').update(payload).eq('id', shipment.id).eq('user_id', userId);
+        updateError = res.error;
+      }
+
       if (updateError) throw updateError;
+
+      setMilestones(updatedHistory);
+      setRouteWaypoints(updatedWaypoints);
+      setIsOnHold(isHold);
 
       const updatedShipment = {
         ...shipment,
         status: newStatus,
-        history: updatedHistory
+        is_on_hold: isHold,
+        history: updatedHistory,
+        route_waypoints: updatedWaypoints
       };
 
       onUpdate(updatedShipment);
@@ -760,6 +919,18 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                                   minute: '2-digit'
                                 })}
                               </span>
+                              {!isActive && (
+                                <button
+                                  type="button"
+                                  disabled={isSavingMilestones}
+                                  onClick={() => handleDirectStageAdvance(item.status_name as ShipmentStatus)}
+                                  className="px-2 py-1 bg-fedex-purple/10 hover:bg-fedex-purple text-fedex-purple hover:text-white rounded-md text-[9px] font-black uppercase tracking-wider transition-all flex items-center gap-1 shrink-0"
+                                  title={`Advance to ${item.status_name} (sets timestamp to NOW and recalculates future stages)`}
+                                >
+                                  <Play className="w-2.5 h-2.5" />
+                                  <span>Advance</span>
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => setEditingMilestoneIdx(isEditing ? null : idx)}

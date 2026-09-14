@@ -266,41 +266,377 @@ export function evaluateShipmentMilestones(
   };
 }
 
-// Local synchronous fallback generator
+// Clean location string utility to prevent embedding personal names into location fields
+export function cleanLocationString(
+  rawLocation: string | undefined | null,
+  senderName?: string | null,
+  recipientName?: string | null,
+  fallback = 'FedEx Transit Facility'
+): string {
+  if (!rawLocation || !rawLocation.trim()) return fallback;
+  let loc = rawLocation.trim();
+
+  // Strip prefix/suffix identifiers
+  loc = loc.replace(/^(Sender|Recipient|Receiver|Customer|Shipper|To|From):\s*/i, '');
+  loc = loc.replace(/\s*-\s*(Sender|Recipient|Receiver|Customer|Shipper):.*$/i, '');
+
+  if (senderName && senderName.trim()) {
+    const sName = senderName.trim();
+    const escaped = sName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    loc = loc.replace(new RegExp(`^${escaped}\\s*[-–—:,/]\\s*`, 'i'), '');
+    loc = loc.replace(new RegExp(`\\s*[-–—:,/]\\s*${escaped}$`, 'i'), '');
+    loc = loc.replace(new RegExp(`\\s*\\(${escaped}\\)`, 'i'), '');
+  }
+
+  if (recipientName && recipientName.trim()) {
+    const rName = recipientName.trim();
+    const escaped = rName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    loc = loc.replace(new RegExp(`^${escaped}\\s*[-–—:,/]\\s*`, 'i'), '');
+    loc = loc.replace(new RegExp(`\\s*[-–—:,/]\\s*${escaped}$`, 'i'), '');
+    loc = loc.replace(new RegExp(`\\s*\\(${escaped}\\)`, 'i'), '');
+  }
+
+  loc = loc.trim().replace(/^[-–—:,/]\s*/, '').replace(/\s*[-–—:,/]$/, '').trim();
+  return loc || fallback;
+}
+
+export const CANONICAL_STAGE_ORDER: ShipmentStatus[] = [
+  'Shipping label created',
+  'Package received by FedEx',
+  'In Transit',
+  'On the way',
+  'Arriving at destination facility',
+  'At local FedEx facility',
+  'Out for Delivery',
+  'Delivered'
+];
+
+export interface DeduplicationOptions {
+  origin?: string | null;
+  senderAddress?: string | null;
+  destination?: string | null;
+  senderName?: string | null;
+  recipientName?: string | null;
+  serviceType?: string | null;
+  startTime?: string | Date | null;
+  estimatedDeliveryDate?: string | Date | null;
+}
+
+/**
+ * Deduplication Cleanup Utility:
+ * Enforces exactly ONE array of 8 ordered milestone objects inside the history JSONB payload (Index 0 through 7).
+ * Strictly prevents .push() append loops, removes duplicated stages, restores canonical ordering,
+ * spaces timestamps chronologically, and enforces strict physical location mapping:
+ * - Stages 1 & 2: Exact Origin string provided in form
+ * - Stages 3 to 6: Clean transit hub / corridor names (no personal names)
+ * - Stages 7 & 8: Exact Destination string provided in form
+ */
+export function deduplicateAndEnforce8Stages(
+  rawHistory: any[] | undefined | null,
+  options: DeduplicationOptions = {}
+): ShipmentHistoryItem[] {
+  const originClean = (options.origin || options.senderAddress || '').trim() || 'Origin Facility';
+  const destClean = (options.destination || '').trim() || 'Destination Address';
+  const destCity = extractCityOrRegion(destClean, 'Destination Hub');
+  const hub = getSmartFedExHub(originClean, destClean, options.serviceType || undefined);
+
+  // Canonical stage locations adhering to strict mapping rules
+  const canonicalLocations: string[] = [
+    originClean,                                      // Stage 1: exact origin
+    originClean,                                      // Stage 2: exact origin
+    hub.hubLocation,                                  // Stage 3: transit hub
+    `FedEx Gateway Transit Corridor (${hub.hubName})`, // Stage 4: transit corridor
+    `${destCity} Regional Ramp Terminal`,             // Stage 5: destination ramp
+    `FedEx Destination Station, ${destCity}`,         // Stage 6: local facility
+    destClean,                                        // Stage 7: exact destination
+    destClean                                         // Stage 8: exact destination
+  ];
+
+  const defaultDescriptions = [
+    'Shipping label has been created. Package awaiting origin carrier pickup.',
+    'Picked up by FedEx. Scanned and verified at origin station.',
+    `Arrived at ${hub.hubName}. Automated optical sort scanning in progress.`,
+    `Departed ${hub.hubName} via FedEx Express transport to destination gateway.`,
+    `Flight arrived at ${destCity} regional air ramp. Inbound sort scan complete.`,
+    `Package arrived at local delivery station in ${destCity}. Staged for courier dispatch.`,
+    'On FedEx delivery vehicle for final delivery. Courier route active.',
+    'Delivered. Package securely delivered to destination.'
+  ];
+
+  const baselineTimestamps = calculate8StageSpacedTimestamps(
+    options.startTime || undefined,
+    options.estimatedDeliveryDate || undefined
+  );
+
+  const rawArray = Array.isArray(rawHistory) ? rawHistory : [];
+
+  const result: ShipmentHistoryItem[] = [];
+
+  for (let stageIdx = 0; stageIdx < CANONICAL_STAGE_ORDER.length; stageIdx++) {
+    const targetStatus = CANONICAL_STAGE_ORDER[stageIdx];
+    const targetNorm = targetStatus.toLowerCase();
+
+    // Find matching items in raw history
+    const matches = rawArray.filter((item: any) => {
+      if (!item) return false;
+      const sName = (item.status_name || item.stage_name || '').toString().toLowerCase().trim();
+      if (sName === targetNorm) return true;
+      if (stageIdx === 0 && (sName.includes('label created') || sName.includes('shipping label'))) return true;
+      if (stageIdx === 1 && (sName.includes('package received') || sName.includes('picked up'))) return true;
+      if (stageIdx === 2 && sName === 'in transit') return true;
+      if (stageIdx === 3 && (sName === 'on the way' || sName.includes('way'))) return true;
+      if (stageIdx === 4 && (sName.includes('arriving at destination') || sName.includes('destination facility'))) return true;
+      if (stageIdx === 5 && (sName.includes('at local') || sName.includes('local fedex'))) return true;
+      if (stageIdx === 6 && (sName.includes('out for delivery') || sName.includes('delivery route'))) return true;
+      if (stageIdx === 7 && (sName.includes('delivered') && !sName.includes('out'))) return true;
+      return false;
+    });
+
+    let matchedItem: any = null;
+    if (matches.length > 0) {
+      matchedItem = matches[0];
+    } else if (rawArray.length === 8 && rawArray[stageIdx]) {
+      matchedItem = rawArray[stageIdx];
+    }
+
+    // Determine clean physical location
+    let finalLocation = canonicalLocations[stageIdx];
+    if (stageIdx >= 2 && stageIdx <= 5 && matchedItem && matchedItem.location) {
+      const cleaned = cleanLocationString(
+        matchedItem.location,
+        options.senderName,
+        options.recipientName,
+        canonicalLocations[stageIdx]
+      );
+      if (cleaned && cleaned !== originClean && cleaned !== destClean) {
+        finalLocation = cleaned;
+      }
+    }
+
+    // Determine timestamp
+    let finalTimestamp = baselineTimestamps[stageIdx];
+    if (matchedItem && matchedItem.timestamp) {
+      const parsed = new Date(matchedItem.timestamp);
+      if (!isNaN(parsed.getTime())) {
+        finalTimestamp = parsed.toISOString();
+      }
+    }
+
+    // Determine description
+    let finalDescription = defaultDescriptions[stageIdx];
+    if (matchedItem && matchedItem.description && matchedItem.description.trim()) {
+      finalDescription = matchedItem.description.trim();
+    }
+
+    result.push({
+      status_name: targetStatus,
+      location: finalLocation,
+      timestamp: finalTimestamp,
+      description: finalDescription
+    });
+  }
+
+  // Ensure chronological monotonicity: stage[i] timestamp >= stage[i-1] timestamp
+  for (let i = 1; i < result.length; i++) {
+    const prevMs = new Date(result[i - 1].timestamp).getTime();
+    const currMs = new Date(result[i].timestamp).getTime();
+    if (isNaN(currMs) || currMs <= prevMs) {
+      result[i].timestamp = new Date(prevMs + 30 * 60 * 1000).toISOString();
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Manual Stage Override Logic:
+ * When an admin manually advances a shipment to a specific stage (e.g. Stage 4: "On the way"):
+ * 1. Mark Stage 4's timestamp as NOW() (or selected manual time) and set its state to active.
+ * 2. Automatically recalculate the timestamps for ALL SUBSEQUENT UNREACHED STAGES (Stages 5-8)
+ *    so their dates/times sit in the FUTURE starting from the new manual timestamp up to estimated_delivery_date.
+ * 3. Never append (.push()); map over the fixed 8-stage indices.
+ * 4. Strictly prevent duplicate status names or out-of-order steps.
+ */
+export function advanceShipmentToStage(
+  currentHistory: ShipmentHistoryItem[] | undefined | null,
+  targetStatus: ShipmentStatus,
+  options: {
+    manualTimestamp?: string | null;
+    estimatedDeliveryDate?: string | null;
+    location?: string | null;
+    description?: string | null;
+    origin?: string | null;
+    destination?: string | null;
+    senderName?: string | null;
+    recipientName?: string | null;
+    serviceType?: string | null;
+  } = {}
+): {
+  history: ShipmentHistoryItem[];
+  route_waypoints: RouteWaypoint[];
+  activeStageIndex: number;
+} {
+  // Step 1: Ensure fixed 8-stage canonical single array
+  const stages = deduplicateAndEnforce8Stages(currentHistory, {
+    origin: options.origin,
+    destination: options.destination,
+    senderName: options.senderName,
+    recipientName: options.recipientName,
+    serviceType: options.serviceType,
+    estimatedDeliveryDate: options.estimatedDeliveryDate
+  });
+
+  const targetIdx = CANONICAL_STAGE_ORDER.indexOf(targetStatus);
+
+  if (targetIdx === -1) {
+    // Non-canonical stage (e.g. 'On Hold', 'Exception')
+    const waypoints: RouteWaypoint[] = stages.map((item, idx) => ({
+      stage: idx + 1,
+      stage_name: item.status_name,
+      location: item.location,
+      estimated_time: item.timestamp,
+      description: item.description
+    }));
+    return {
+      history: stages,
+      route_waypoints: waypoints,
+      activeStageIndex: 0
+    };
+  }
+
+  // Step 2: Mark target stage timestamp as manual time (or NOW)
+  const manualDate = options.manualTimestamp ? new Date(options.manualTimestamp) : new Date();
+  const targetTimeMs = isNaN(manualDate.getTime()) ? Date.now() : manualDate.getTime();
+  stages[targetIdx].timestamp = new Date(targetTimeMs).toISOString();
+
+  // Update location if provided, respecting clean location rules
+  if (options.location && options.location.trim()) {
+    if (targetIdx === 0 || targetIdx === 1) {
+      stages[targetIdx].location = (options.origin || '').trim() || stages[targetIdx].location;
+    } else if (targetIdx === 6 || targetIdx === 7) {
+      stages[targetIdx].location = (options.destination || '').trim() || stages[targetIdx].location;
+    } else {
+      stages[targetIdx].location = cleanLocationString(
+        options.location,
+        options.senderName,
+        options.recipientName,
+        stages[targetIdx].location
+      );
+    }
+  }
+
+  // Update description if provided
+  if (options.description && options.description.trim()) {
+    stages[targetIdx].description = options.description.trim();
+  }
+
+  // Step 3: Prior stages (0 to targetIdx - 1)
+  // Ensure their timestamps sit in the past relative to targetTimeMs
+  let priorStepBackMs = targetTimeMs;
+  for (let i = targetIdx - 1; i >= 0; i--) {
+    const existingMs = new Date(stages[i].timestamp).getTime();
+    if (isNaN(existingMs) || existingMs >= priorStepBackMs) {
+      priorStepBackMs = priorStepBackMs - 45 * 60 * 1000;
+      stages[i].timestamp = new Date(priorStepBackMs).toISOString();
+    } else {
+      priorStepBackMs = existingMs;
+    }
+  }
+
+  // Step 4: Automatically recalculate timestamps for ALL SUBSEQUENT UNREACHED STAGES
+  // so their dates/times sit in the FUTURE starting from the new manual timestamp up to estimated_delivery_date
+  const subsequentCount = 7 - targetIdx;
+  if (subsequentCount > 0) {
+    let endMs: number;
+    if (options.estimatedDeliveryDate) {
+      const raw = options.estimatedDeliveryDate.trim();
+      const parsedEnd = raw.includes('T') ? new Date(raw) : new Date(`${raw}T17:00:00`);
+      if (!isNaN(parsedEnd.getTime()) && parsedEnd.getTime() > targetTimeMs + subsequentCount * 30 * 60 * 1000) {
+        endMs = parsedEnd.getTime();
+      } else {
+        endMs = targetTimeMs + Math.max(subsequentCount * 12 * 3600 * 1000, 24 * 3600 * 1000);
+      }
+    } else {
+      endMs = targetTimeMs + Math.max(subsequentCount * 12 * 3600 * 1000, 48 * 3600 * 1000);
+    }
+
+    const totalSpanMs = endMs - targetTimeMs;
+    const stepMs = totalSpanMs / subsequentCount;
+
+    let runningMs = targetTimeMs;
+    for (let step = 1; step <= subsequentCount; step++) {
+      const nextIdx = targetIdx + step;
+      if (nextIdx === 7) {
+        stages[7].timestamp = new Date(endMs).toISOString();
+      } else {
+        const rawMs = targetTimeMs + step * stepMs;
+        let roundedMs = Math.round(rawMs / 60000) * 60000;
+        if (roundedMs <= runningMs) {
+          roundedMs = runningMs + 30 * 60 * 1000;
+        }
+        if (roundedMs >= endMs) {
+          roundedMs = endMs - (7 - nextIdx) * 30 * 60 * 1000;
+        }
+        runningMs = roundedMs;
+        stages[nextIdx].timestamp = new Date(roundedMs).toISOString();
+      }
+    }
+  }
+
+  // Step 5: Build matching 8-stage route_waypoints
+  const waypoints: RouteWaypoint[] = stages.map((item, idx) => ({
+    stage: idx + 1,
+    stage_name: item.status_name,
+    location: item.location,
+    estimated_time: item.timestamp,
+    description: item.description
+  }));
+
+  return {
+    history: stages,
+    route_waypoints: waypoints,
+    activeStageIndex: targetIdx
+  };
+}
+
+// Local synchronous fallback generator ensuring strict clean locations
 export function generate8StageRoute(options: RouteGeneratorOptions): GeneratedRoutePlan {
   const originClean = options.origin?.trim() || options.senderAddress?.trim() || 'Origin Location';
   const destClean = options.destination?.trim() || 'Destination Location';
 
-  const originCity = extractCityOrRegion(originClean, 'Origin Facility');
   const destCity = extractCityOrRegion(destClean, 'Destination Hub');
   const hub = getSmartFedExHub(originClean, destClean, options.serviceType);
 
+  // Strict location mapping:
+  // - Stages 1 & 2: exact Origin
+  // - Stages 3 to 6: transit hub names / corridors
+  // - Stages 7 & 8: exact Destination
   const stageLocations: string[] = [
     originClean,
-    `${originCity} FedEx Ship Center`,
+    originClean,
     hub.hubLocation,
-    `FedEx Gateway Transit Corridor (En Route)`,
+    `FedEx Gateway Transit Corridor (${hub.hubName})`,
     `${destCity} Regional Ramp Terminal`,
-    `At Local FedEx Facility - ${destCity}`,
-    `Local Courier Route - ${destCity}`,
+    `FedEx Destination Station, ${destCity}`,
+    destClean,
     destClean
   ];
 
   const stageDescriptions: string[] = [
     'Shipping label has been created. Package awaiting origin carrier pickup.',
-    `Picked up by FedEx. Scanned at ${originCity} origin station.`,
+    'Picked up by FedEx. Scanned and verified at origin station.',
     `Arrived at ${hub.hubName}. Automated optical sort scanning in progress.`,
     `Departed ${hub.hubName} via FedEx Express flight leg to destination gateway.`,
     `Flight arrived at ${destCity} regional air ramp. Inbound sort scan complete.`,
     `Package arrived at local delivery station in ${destCity}. Staged for courier dispatch.`,
-    `On FedEx delivery vehicle for final delivery. Courier route active.`,
-    `Delivered. Package securely delivered to ${options.recipientName || 'destination'}.`
+    'On FedEx delivery vehicle for final delivery. Courier route active.',
+    'Delivered. Package securely delivered to destination.'
   ];
+
+  const stageTimestamps = calculate8StageSpacedTimestamps(options.startTime, options.estimatedDeliveryDate);
 
   const history: ShipmentHistoryItem[] = [];
   const route_waypoints: RouteWaypoint[] = [];
-
-  const stageTimestamps = calculate8StageSpacedTimestamps(options.startTime, options.estimatedDeliveryDate);
 
   FEDEX_8_STAGES.forEach((item, index) => {
     const timeStr = stageTimestamps[index];
@@ -359,20 +695,29 @@ export async function calculateFedExRouteWithAI(options: RouteGeneratorOptions):
 
     if (res.ok) {
       const data = await res.json();
-      if (data.history && data.route_waypoints && data.history.length === 8) {
-        // Enforce exact Fixed Timestamp Spacing Rules across all 8 stages
-        const guaranteedTimestamps = calculate8StageSpacedTimestamps(options.startTime, options.estimatedDeliveryDate);
-        const alignedHistory = data.history.map((h: any, idx: number) => ({
-          ...h,
-          timestamp: guaranteedTimestamps[idx]
+      if (data.history && data.history.length === 8) {
+        // Run strict deduplication pass and location cleanup
+        const cleanHistory = deduplicateAndEnforce8Stages(data.history, {
+          origin: options.origin || options.senderAddress,
+          destination: options.destination,
+          senderName: options.senderName,
+          recipientName: options.recipientName,
+          serviceType: options.serviceType,
+          startTime: options.startTime,
+          estimatedDeliveryDate: options.estimatedDeliveryDate
+        });
+
+        const cleanWaypoints: RouteWaypoint[] = cleanHistory.map((h, idx) => ({
+          stage: idx + 1,
+          stage_name: h.status_name,
+          location: h.location,
+          estimated_time: h.timestamp,
+          description: h.description
         }));
-        const alignedWaypoints = data.route_waypoints.map((w: any, idx: number) => ({
-          ...w,
-          estimated_time: guaranteedTimestamps[idx]
-        }));
+
         return {
-          history: alignedHistory,
-          route_waypoints: alignedWaypoints,
+          history: cleanHistory,
+          route_waypoints: cleanWaypoints,
           ai_generated: Boolean(data.ai_generated),
           hub_name: data.hub_name,
           routing_summary: data.routing_summary

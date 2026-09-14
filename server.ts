@@ -47,6 +47,40 @@ function determineFedExHub(origin: string, destination: string, serviceType: str
   return { hubName: "FedEx World Hub (SuperHub)", location: "Memphis SuperHub (KMEM), TN" };
 }
 
+// Clean location string utility to prevent embedding personal names into location fields
+function cleanLocationString(
+  rawLocation: string | undefined | null,
+  senderName?: string | null,
+  recipientName?: string | null,
+  fallback = "FedEx Transit Facility"
+): string {
+  if (!rawLocation || !rawLocation.trim()) return fallback;
+  let loc = rawLocation.trim();
+
+  // Strip prefix/suffix identifiers
+  loc = loc.replace(/^(Sender|Recipient|Receiver|Customer|Shipper|To|From):\s*/i, '');
+  loc = loc.replace(/\s*-\s*(Sender|Recipient|Receiver|Customer|Shipper):.*$/i, '');
+
+  if (senderName && senderName.trim()) {
+    const sName = senderName.trim();
+    const escaped = sName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    loc = loc.replace(new RegExp(`^${escaped}\\s*[-–—:,/]\\s*`, 'i'), '');
+    loc = loc.replace(new RegExp(`\\s*[-–—:,/]\\s*${escaped}$`, 'i'), '');
+    loc = loc.replace(new RegExp(`\\s*\\(${escaped}\\)`, 'i'), '');
+  }
+
+  if (recipientName && recipientName.trim()) {
+    const rName = recipientName.trim();
+    const escaped = rName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    loc = loc.replace(new RegExp(`^${escaped}\\s*[-–—:,/]\\s*`, 'i'), '');
+    loc = loc.replace(new RegExp(`\\s*[-–—:,/]\\s*${escaped}$`, 'i'), '');
+    loc = loc.replace(new RegExp(`\\s*\\(${escaped}\\)`, 'i'), '');
+  }
+
+  loc = loc.trim().replace(/^[-–—:,/]\s*/, '').replace(/\s*[-–—:,/]$/, '').trim();
+  return loc || fallback;
+}
+
 // Calculate 8-stage spaced timestamps according to fixed FedEx timeline rules
 function calculate8StageSpacedTimestamps(
   startTime?: string | Date,
@@ -142,7 +176,7 @@ function generateAlgorithmicFedExRoute(params: {
     {
       stage: 2,
       status: "Package received by FedEx",
-      location: `${originCity} FedEx Ship Center`,
+      location: originClean,
       desc: "Picked up by FedEx. Scanned and verified at origin station."
     },
     {
@@ -154,7 +188,7 @@ function generateAlgorithmicFedExRoute(params: {
     {
       stage: 4,
       status: "On the way",
-      location: `FedEx Gateway Flight Corridor (In Transit)`,
+      location: `FedEx Gateway Flight Corridor (${fedExHub.hubName})`,
       desc: `Departed ${fedExHub.hubName} via FedEx Express transport to destination gateway.`
     },
     {
@@ -166,20 +200,20 @@ function generateAlgorithmicFedExRoute(params: {
     {
       stage: 6,
       status: "At local FedEx facility",
-      location: `At local FedEx facility - ${destCity}`,
+      location: `FedEx Destination Station, ${destCity}`,
       desc: "Package sorted at destination delivery station. Scanned to courier dispatch staging bin."
     },
     {
       stage: 7,
       status: "Out for Delivery",
-      location: `Local Delivery Route - ${destCity}`,
+      location: destClean,
       desc: "On FedEx vehicle for delivery. Final courier run initiated."
     },
     {
       stage: 8,
       status: "Delivered",
       location: destClean,
-      desc: `Delivered. Package safely released to ${params.recipientName || 'recipient'}.`
+      desc: "Delivered. Package securely delivered to destination."
     }
   ];
 
@@ -233,6 +267,7 @@ app.post("/api/fedex/calculate-route", async (req, res) => {
 
   const originClean = origin?.trim() || "Dallas, TX";
   const destClean = destination?.trim() || "Frankfurt, Germany";
+  const fedExHub = determineFedExHub(originClean, destClean, serviceType);
 
   const apiKey = process.env.GEMINI_API_KEY;
 
@@ -294,16 +329,14 @@ Logistical Routing Rules:
    - Asia / Transpacific: Guangzhou Baiyun Hub (CAN) or Narita (NRT).
    - Middle East / Africa / India: Dubai World Central / DXB Gateway.
 
-3. Location formatting: Include realistic FedEx facility names, e.g.:
-   - "FedEx Ship Center - [City, State/Country]"
-   - "[Specific FedEx Hub Name], [State/Country]"
-   - "Regional Air Ramp - [Airport/City]"
-   - "At local FedEx facility - [City, State/Country]"
-   - "Destination Delivery Station - [City, State/Country]"
+3. Strict Milestone Location Mapping Rules:
+   - Stage 1 and Stage 2 locations MUST be EXACTLY: "${originClean}" (exact origin string provided).
+   - Stage 3 to Stage 6 locations MUST be clean transit hub names or transit corridors (e.g. "${fedExHub.location}", regional air ramps). NEVER append or prepend personal names ("${senderName || ''}" or "${recipientName || ''}") into ANY location string!
+   - Stage 7 and Stage 8 locations MUST be EXACTLY: "${destClean}" (exact destination string provided).
 
 4. Timestamps: Generate chronologically sequential, realistic ISO 8601 timestamps progressing smoothly from start time to the delivery target. Ensure each stage is strictly later than the prior stage.
 
-5. Descriptions: Write authentic FedEx tracking scan messages (e.g. "Shipping label created. Package awaiting carrier pickup", "Picked up by FedEx. Origin scan complete", "Arrived at FedEx World Hub. Package sorted through automated optical scanners", "Departed FedEx location on flight FX...", "At destination sort facility. Package sorted to local courier delivery van", "On FedEx vehicle for delivery", "Delivered. Left at recipient address").`;
+5. Descriptions: Write authentic FedEx tracking scan messages (e.g. "Shipping label created. Package awaiting carrier pickup", "Picked up by FedEx. Origin scan complete", "Arrived at FedEx World Hub. Package sorted through automated optical scanners", "Departed FedEx location on flight FX...", "At destination sort facility. Package sorted to local courier delivery van", "On FedEx vehicle for delivery", "Delivered. Package securely delivered to destination.").`;
 
     const response = await ai.models.generateContent({
       model: "gemini-3.6-flash",
@@ -344,14 +377,27 @@ Logistical Routing Rules:
     const parsed = JSON.parse(response.text || "{}");
 
     if (parsed.stages && Array.isArray(parsed.stages) && parsed.stages.length === 8) {
-      // Enforce Fixed Timestamp Spacing Rules: Stage 1 = NOW(), Stages 2-7 = evenly divided future timestamps, Stage 8 = delivery target
+      // Enforce Fixed Timestamp Spacing Rules & Clean Location Mapping
       const guaranteedTimestamps = calculate8StageSpacedTimestamps(startTime, estimatedDeliveryDate);
-      const sanitizedHistory = parsed.stages.map((s: any, idx: number) => ({
-        status_name: s.status_name,
-        location: s.location,
-        timestamp: guaranteedTimestamps[idx],
-        description: s.description
-      }));
+      const sanitizedHistory = parsed.stages.map((s: any, idx: number) => {
+        let loc = s.location;
+        if (idx === 0 || idx === 1) {
+          loc = originClean;
+        } else if (idx === 6 || idx === 7) {
+          loc = destClean;
+        } else {
+          loc = cleanLocationString(loc, senderName, recipientName, fedExHub.location);
+          if (loc === originClean || loc === destClean) {
+            loc = fedExHub.location;
+          }
+        }
+        return {
+          status_name: s.status_name,
+          location: loc,
+          timestamp: guaranteedTimestamps[idx],
+          description: s.description
+        };
+      });
 
       const sanitizedWaypoints = parsed.stages.map((s: any, idx: number) => ({
         stage: s.stage || (idx + 1),

@@ -45,6 +45,7 @@ import {
   generate8StageRoute, 
   calculateFedExRouteWithAI, 
   calculate8StageSpacedTimestamps,
+  deduplicateAndEnforce8Stages,
   FEDEX_8_STAGES 
 } from '../utils/routeGenerator';
 
@@ -375,18 +376,24 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       }
     }
 
-    // Strictly enforce Fixed Timestamp Spacing Rules before saving to Supabase:
+    // Strictly enforce Fixed 8-Stage Single Array & Clean Location Mapping Rules before saving to Supabase:
     const nowIso = new Date().toISOString();
-    const guaranteedTimestamps = calculate8StageSpacedTimestamps(nowIso, estimatedDeliveryDate || undefined);
+    finalHistory = deduplicateAndEnforce8Stages(finalHistory, {
+      origin: originCityState || senderAddress,
+      destination: destinationAddress,
+      senderName: senderName || undefined,
+      recipientName: recipientName,
+      serviceType: serviceType,
+      startTime: eventTime || nowIso,
+      estimatedDeliveryDate: estimatedDeliveryDate || undefined
+    });
 
-    // Apply spaced timestamps to history and waypoints
-    finalHistory = (finalHistory || []).map((item, idx) => ({
-      ...item,
-      timestamp: guaranteedTimestamps[idx] || nowIso
-    }));
-    finalWaypoints = ((finalWaypoints && finalWaypoints.length === 8 ? finalWaypoints : finalHistory) || []).map((item, idx) => ({
-      ...item,
-      estimated_time: guaranteedTimestamps[idx] || nowIso
+    finalWaypoints = finalHistory.map((item, idx) => ({
+      stage: idx + 1,
+      stage_name: item.status_name,
+      location: item.location,
+      estimated_time: item.timestamp,
+      description: item.description
     }));
 
     const isOnHold = Boolean(formData.isOnHold);

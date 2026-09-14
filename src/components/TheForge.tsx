@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   X, 
   Copy, 
@@ -57,6 +57,7 @@ const getDefaultDeliveryDate = () => {
 };
 
 interface TheForgeProps {
+  key?: React.Key;
   isOpen: boolean;
   onClose: () => void;
   onShipmentCreated: () => void;
@@ -118,86 +119,39 @@ export const parseCount = (val: any, fallback = 1): number => {
   return fallback;
 };
 
+export const getInitialFormData = () => ({
+  senderName: '',
+  senderAddress: '',
+  recipientName: '',
+  destinationAddress: '',
+  originCityState: '',
+  currency: 'USD',
+  serviceType: 'FedEx Priority Overnight',
+  valuationMode: 'asset' as 'asset' | 'package',
+  assetValue: '',
+  serviceFee: '',
+  packageType: 'FedEx Box (Small/Medium/Large)',
+  weight: '',
+  weightUnit: 'lbs' as 'lbs' | 'kg',
+  length: '',
+  width: '',
+  height: '',
+  dimensionUnit: 'in' as 'in' | 'cm',
+  numPackages: '1',
+  declaredValue: '',
+  isDryIce: false,
+  isHazardous: false,
+  isSaturdayDelivery: false,
+  signatureOption: 'None',
+  isHoldAtLocation: false,
+  autoAdvance: true,
+  isOnHold: false,
+  timeOfEntry: new Date().toISOString().slice(0, 16),
+  estimatedDeliveryDate: getDefaultDeliveryDate(),
+});
+
 export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimisticCreate, userId }: TheForgeProps) {
-  const [formData, setFormData] = useState(() => {
-    const saved = localStorage.getItem('forge_form_cache');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        return {
-          senderName: '',
-          senderAddress: '',
-          recipientName: '',
-          destinationAddress: '',
-          originCityState: '',
-          currency: 'USD',
-          serviceType: 'FedEx Priority Overnight',
-          valuationMode: 'asset' as 'asset' | 'package',
-          assetValue: '',
-          serviceFee: '',
-          packageType: 'FedEx Box (Small/Medium/Large)',
-          weight: '',
-          weightUnit: 'lbs' as 'lbs' | 'kg',
-          length: '',
-          width: '',
-          height: '',
-          dimensionUnit: 'in' as 'in' | 'cm',
-          numPackages: '1',
-          declaredValue: '',
-          isDryIce: false,
-          isHazardous: false,
-          isSaturdayDelivery: false,
-          signatureOption: 'None',
-          isHoldAtLocation: false,
-          autoAdvance: true,
-          isOnHold: false,
-          ...parsed,
-          timeOfEntry: new Date().toISOString().slice(0, 16), // Always refresh time
-          estimatedDeliveryDate: (parsed.estimatedDeliveryDate && parsed.estimatedDeliveryDate >= new Date().toISOString().slice(0, 10))
-            ? parsed.estimatedDeliveryDate
-            : getDefaultDeliveryDate()
-        };
-      } catch (e) {
-        console.error("Cache Recovery Failed:", e);
-      }
-    }
-    return {
-      senderName: '',
-      senderAddress: '',
-      recipientName: '',
-      destinationAddress: '',
-      originCityState: '',
-      currency: 'USD',
-      serviceType: 'FedEx Priority Overnight',
-      valuationMode: 'asset' as 'asset' | 'package',
-      assetValue: '',
-      serviceFee: '',
-      packageType: 'FedEx Box (Small/Medium/Large)',
-      weight: '',
-      weightUnit: 'lbs' as 'lbs' | 'kg',
-      length: '',
-      width: '',
-      height: '',
-      dimensionUnit: 'in' as 'in' | 'cm',
-      numPackages: '1',
-      declaredValue: '',
-      isDryIce: false,
-      isHazardous: false,
-      isSaturdayDelivery: false,
-      signatureOption: 'None',
-      isHoldAtLocation: false,
-      autoAdvance: true,
-      isOnHold: false,
-      timeOfEntry: new Date().toISOString().slice(0, 16),
-      estimatedDeliveryDate: getDefaultDeliveryDate(),
-    };
-  });
-
-  // Persistence Effect
-  React.useEffect(() => {
-    localStorage.setItem('forge_form_cache', JSON.stringify(formData));
-  }, [formData]);
-
+  const [formData, setFormData] = useState(getInitialFormData);
   const [successData, setSuccessData] = useState<{ trackingId: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [isInitializing, setIsInitializing] = useState(false);
@@ -213,6 +167,35 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
   const [aiHubName, setAiHubName] = useState<string | null>(null);
   const [aiRoutingSummary, setAiRoutingSummary] = useState<string | null>(null);
   const [isAiGenerated, setIsAiGenerated] = useState<boolean>(false);
+
+  // Full form reset: Clears all input fields, history, route_waypoints, dimensions, hold/advance flags
+  const resetForm = useCallback(() => {
+    setFormData(getInitialFormData());
+    setMilestones([]);
+    setRouteWaypoints([]);
+    setIsRouteGenerated(false);
+    setShowMilestonesEditor(false);
+    setEditingMilestoneIdx(null);
+    setIsCalculatingRoute(false);
+    setAiHubName(null);
+    setAiRoutingSummary(null);
+    setIsAiGenerated(false);
+    setError(null);
+    setSuccessData(null);
+    setCopied(false);
+    try {
+      localStorage.removeItem('forge_form_cache');
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Form Reset on Init: Reset immediately whenever modal opens or initializes
+  useEffect(() => {
+    if (isOpen) {
+      resetForm();
+    }
+  }, [isOpen, resetForm]);
 
   const handleGenerateRoute = async () => {
     setIsCalculatingRoute(true);
@@ -427,6 +410,25 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     onOptimisticCreate(newShipment);
     onShipmentCreated();
     
+    // Trigger full form reset on successful shipment creation:
+    // Ensures history, route_waypoints, is_on_hold, and package dimensions do NOT carry over from previous records
+    setFormData(getInitialFormData());
+    setMilestones([]);
+    setRouteWaypoints([]);
+    setIsRouteGenerated(false);
+    setShowMilestonesEditor(false);
+    setEditingMilestoneIdx(null);
+    setIsCalculatingRoute(false);
+    setAiHubName(null);
+    setAiRoutingSummary(null);
+    setIsAiGenerated(false);
+    setError(null);
+    try {
+      localStorage.removeItem('forge_form_cache');
+    } catch {
+      // ignore
+    }
+    
     // 3. BACKGROUND SYNC (Session check + Insert with Schema Graceful Fallback)
     (async () => {
       try {
@@ -485,36 +487,12 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
   };
 
   const handleResetAndClose = () => {
-    setFormData({
-      senderName: '',
-      senderAddress: '',
-      recipientName: '',
-      destinationAddress: '',
-      originCityState: '',
-      currency: 'USD',
-      serviceType: 'FedEx Priority Overnight',
-      valuationMode: 'asset',
-      assetValue: '',
-      serviceFee: '',
-      packageType: 'FedEx Box (Small/Medium/Large)',
-      weight: '',
-      weightUnit: 'lbs',
-      length: '',
-      width: '',
-      height: '',
-      dimensionUnit: 'in',
-      numPackages: '1',
-      declaredValue: '',
-      isDryIce: false,
-      isHazardous: false,
-      isSaturdayDelivery: false,
-      signatureOption: 'None',
-      isHoldAtLocation: false,
-      timeOfEntry: new Date().toISOString().slice(0, 16),
-      estimatedDeliveryDate: '',
-    });
-    localStorage.removeItem('forge_form_cache');
-    setSuccessData(null);
+    resetForm();
+    onClose();
+  };
+
+  const handleClose = () => {
+    resetForm();
     onClose();
   };
 
@@ -527,7 +505,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            onClick={successData ? undefined : onClose}
+            onClick={successData ? undefined : handleClose}
             className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-40"
           />
 
@@ -549,7 +527,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
               </div>
               {!successData && (
                 <button 
-                  onClick={onClose}
+                  onClick={handleClose}
                   className="p-2 hover:bg-slate-100 rounded-full transition-colors"
                 >
                   <X className="w-6 h-6 text-slate-400" />

@@ -79,8 +79,17 @@ export default function App() {
   const [savedShipments, setSavedShipments] = useState<Shipment[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isForgeOpen, setIsForgeOpen] = useState(false);
+  const [forgeKey, setForgeKey] = useState(0);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [selectedShipment, setSelectedShipment] = useState<Shipment | null>(null);
+
+  const handleOpenForge = () => {
+    try {
+      localStorage.removeItem('forge_form_cache');
+    } catch {}
+    setForgeKey(prev => prev + 1);
+    setIsForgeOpen(true);
+  };
 
   useEffect(() => {
     // Auth Listeners & Initial Recovery
@@ -360,7 +369,7 @@ export default function App() {
           </div>
 
           <button 
-            onClick={() => setIsForgeOpen(true)}
+            onClick={handleOpenForge}
             className="flex items-center gap-2 bg-fedex-purple hover:bg-purple-700 text-white px-4 md:px-6 py-2 rounded-xl font-black text-[10px] md:text-xs transition-all active:scale-95 shadow-lg shadow-fedex-purple/20 shrink-0 uppercase tracking-widest"
           >
             <Plus className="w-4 h-4" />
@@ -397,6 +406,7 @@ export default function App() {
       </main>
 
       <TheForge 
+        key={forgeKey}
         isOpen={isForgeOpen} 
         onClose={() => setIsForgeOpen(false)} 
         onShipmentCreated={() => {}} 

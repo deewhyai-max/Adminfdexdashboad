@@ -120,6 +120,7 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
   const [milestones, setMilestones] = useState<ShipmentHistoryItem[]>(() => {
     return deduplicateAndEnforce8Stages(shipment?.history, {
       origin: shipment?.origin_city_state || undefined,
+      senderAddress: shipment?.sender_address || undefined,
       destination: shipment?.destination_address || undefined,
       senderName: shipment?.sender_name || undefined,
       recipientName: shipment?.recipient_name || undefined,
@@ -172,6 +173,7 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
 
       const cleanHistory = deduplicateAndEnforce8Stages(shipment.history, {
         origin: shipment.origin_city_state || undefined,
+        senderAddress: shipment.sender_address || undefined,
         destination: shipment.destination_address || undefined,
         senderName: shipment.sender_name || undefined,
         recipientName: shipment.recipient_name || undefined,
@@ -186,6 +188,15 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
         estimated_time: item.timestamp,
         description: item.description
       })));
+
+      // Initialize location & description fields with the current active milestone's values
+      const currentActiveStage = cleanHistory.find(m => m.status_name === shipment.status) || cleanHistory[0];
+      if (currentActiveStage) {
+        setLocation(currentActiveStage.location || '');
+        if (currentActiveStage.description) {
+          setDescription(currentActiveStage.description);
+        }
+      }
     }
   }, [shipment]);
 
@@ -317,12 +328,13 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
     setMilestonesSuccess(false);
     try {
       const cleanedMilestones = deduplicateAndEnforce8Stages(milestones, {
-        origin: origin || senderAddress || shipment?.origin_city_state,
-        destination: address || shipment?.destination_address,
-        senderName: senderName || shipment?.sender_name,
-        recipientName: recipient || shipment?.recipient_name,
-        serviceType: serviceType || shipment?.service_type,
-        estimatedDeliveryDate: deliveryDate || shipment?.estimated_delivery_date
+        origin: origin || undefined,
+        senderAddress: senderAddress || shipment?.sender_address || undefined,
+        destination: address || shipment?.destination_address || undefined,
+        senderName: senderName || shipment?.sender_name || undefined,
+        recipientName: recipient || shipment?.recipient_name || undefined,
+        serviceType: serviceType || shipment?.service_type || undefined,
+        estimatedDeliveryDate: deliveryDate || shipment?.estimated_delivery_date || undefined
       });
 
       const cleanedWaypoints: RouteWaypoint[] = cleanedMilestones.map((item, idx) => ({
@@ -393,7 +405,8 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
         {
           manualTimestamp: nowIso,
           estimatedDeliveryDate: deliveryDate || shipment.estimated_delivery_date || undefined,
-          origin: origin || senderAddress || shipment.origin_city_state || undefined,
+          origin: origin || undefined,
+          senderAddress: senderAddress || shipment.sender_address || undefined,
           destination: address || shipment.destination_address || undefined,
           senderName: senderName || shipment.sender_name || undefined,
           recipientName: recipient || shipment.recipient_name || undefined,
@@ -469,10 +482,15 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
       }
       // ------------------------------------
 
+      // Strictly prioritize senderAddress over senderName, never use senderName as origin
+      const cleanOriginCityState = (senderAddress && senderAddress.trim())
+        || (origin && origin.trim() && origin.trim().toLowerCase() !== (senderName || '').trim().toLowerCase() ? origin.trim() : '')
+        || 'FedEx Origin Facility';
+
       const updatedData: any = {
         recipient_name: recipient && recipient.trim() ? recipient.trim() : 'Unspecified',
         destination_address: address && address.trim() ? address.trim() : null,
-        origin_city_state: origin && origin.trim() ? origin.trim() : (senderAddress && senderAddress.trim() ? senderAddress.trim() : (senderName && senderName.trim() ? senderName.trim() : null)),
+        origin_city_state: cleanOriginCityState,
         sender_name: senderName && senderName.trim() ? senderName.trim() : null,
         sender_address: senderAddress && senderAddress.trim() ? senderAddress.trim() : null,
         currency: currency && currency.trim() ? currency.trim() : 'USD',
@@ -560,7 +578,9 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
       // ------------------------------------
 
       // Strict Fixed 8-Stage Single Array Rule:
-      // Never append (.push()) new stages. Map/advance within the canonical 8 stages.
+      // When a manual update is done, save the location and timing set by the user,
+      // and still leave the ones AI calculated as upcoming.
+      // Don't use sender name as location for stages, use sender address only.
       const effectiveHistory = milestones.length === 8 ? milestones : (shipment.history || []);
       const manualTs = updateTime ? new Date(updateTime).toISOString() : new Date().toISOString();
 
@@ -572,7 +592,8 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
           estimatedDeliveryDate: deliveryDate || shipment.estimated_delivery_date || undefined,
           location: location || undefined,
           description: description || undefined,
-          origin: origin || senderAddress || shipment.origin_city_state || undefined,
+          origin: origin || undefined,
+          senderAddress: senderAddress || shipment.sender_address || undefined,
           destination: address || shipment.destination_address || undefined,
           senderName: senderName || shipment.sender_name || undefined,
           recipientName: recipient || shipment.recipient_name || undefined,
@@ -1013,7 +1034,20 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                   <div className="relative">
                     <select 
                       value={newStatus}
-                      onChange={(e) => setNewStatus(e.target.value as ShipmentStatus)}
+                      onChange={(e) => {
+                        const nextStatus = e.target.value as ShipmentStatus;
+                        setNewStatus(nextStatus);
+                        // Populate location and description from existing stage if user hasn't explicitly customized yet
+                        const existingStage = milestones.find(m => m.status_name === nextStatus);
+                        if (existingStage) {
+                          if (existingStage.location) {
+                            setLocation(existingStage.location);
+                          }
+                          if (existingStage.description) {
+                            setDescription(existingStage.description);
+                          }
+                        }
+                      }}
                       className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-4 outline-none focus:ring-4 focus:ring-fedex-purple/5 focus:border-fedex-purple transition-all font-black text-base text-slate-900 appearance-none shadow-sm"
                     >
                       {STATUS_OPTIONS.map(opt => (

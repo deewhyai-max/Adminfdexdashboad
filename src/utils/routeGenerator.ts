@@ -47,10 +47,55 @@ export const FEDEX_8_STAGES: { stage: number; status: ShipmentStatus; defaultDes
 export function extractCityOrRegion(address: string | undefined | null, fallback: string): string {
   if (!address || !address.trim()) return fallback;
   const parts = address.split(',').map(p => p.trim()).filter(Boolean);
-  if (parts.length >= 2) {
-    return parts.slice(1, 3).join(', ');
+  if (parts.length === 0) return fallback;
+  if (parts.length === 1) return parts[0];
+  if (parts.length === 2) return `${parts[0]}, ${parts[1]}`;
+  // E.g. "123 Main St, Dallas, TX 75201" -> "Dallas, TX 75201"
+  return `${parts[1]}, ${parts[2]}`;
+}
+
+// Aggressively strips any personal or company sender name from an address or location string
+export function stripSenderName(
+  text: string | undefined | null,
+  senderName?: string | null
+): string {
+  if (!text || !text.trim()) return '';
+  let cleaned = text.trim();
+  if (!senderName || !senderName.trim()) return cleaned;
+
+  const sName = senderName.trim();
+  const sNameLower = sName.toLowerCase();
+
+  // If text is identically the sender name
+  if (cleaned.toLowerCase() === sNameLower) return '';
+
+  // 1. Strip common prefixes referencing sender/shipper
+  cleaned = cleaned.replace(/^(Sender|Shipper|From|Customer|Shipper Name|Sender Name):\s*/gi, '');
+  cleaned = cleaned.replace(/\s*[-–—:,/|]\s*(Sender|Shipper|From|Customer|Shipper Name|Sender Name):?.*$/gi, '');
+
+  // 2. Remove the full sender name case-insensitively wherever it appears
+  const escaped = sName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  cleaned = cleaned.replace(new RegExp(escaped, 'gi'), '');
+
+  // 3. If senderName has multiple words, strip individual distinctive name words (length >= 3)
+  const genericWords = new Set(['inc', 'llc', 'corp', 'co', 'the', 'and', 'ltd', 'express', 'logistics', 'hub', 'fedex', 'facility', 'station', 'transit', 'route', 'global']);
+  const words = sName.split(/\s+/).map(w => w.trim()).filter(w => w.length >= 3 && !genericWords.has(w.toLowerCase()));
+  for (const word of words) {
+    const escWord = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    cleaned = cleaned.replace(new RegExp(`(^|[\\s,–—\\-:/|])${escWord}([\\s,–—\\-:/|]|$)`, 'gi'), '$1$2');
   }
-  return parts[0] || fallback;
+
+  // 4. Clean dangling punctuation and spaces
+  cleaned = cleaned
+    .replace(/^[\s,–—\-:/|]+/, '')
+    .replace(/[\s,–—\-:/|]+$/, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/,\s*,/g, ', ')
+    .replace(/^,\s*/, '')
+    .replace(/\s*,$/, '')
+    .trim();
+
+  return cleaned;
 }
 
 export interface RouteGeneratorOptions {
@@ -266,37 +311,65 @@ export function evaluateShipmentMilestones(
   };
 }
 
-// Clean location string utility to prevent embedding personal names into location fields
+// Clean location string utility to prevent embedding personal names into location fields.
+// Sender address is always used instead of sender name.
 export function cleanLocationString(
   rawLocation: string | undefined | null,
   senderName?: string | null,
   recipientName?: string | null,
-  fallback = 'FedEx Transit Facility'
+  fallback = 'FedEx Transit Facility',
+  senderAddress?: string | null,
+  stageIndex?: number
 ): string {
-  if (!rawLocation || !rawLocation.trim()) return fallback;
+  const isSenderStage = stageIndex === 0 || stageIndex === 1;
+  const cleanSenderAddr = stripSenderName(senderAddress, senderName);
+  const defaultFallback = isSenderStage
+    ? (cleanSenderAddr || fallback)
+    : fallback;
+
+  if (!rawLocation || !rawLocation.trim()) return defaultFallback;
   let loc = rawLocation.trim();
+
+  // Strip sender name aggressively
+  if (senderName && senderName.trim()) {
+    loc = stripSenderName(loc, senderName);
+  }
+
+  // Strip recipient name aggressively
+  if (recipientName && recipientName.trim()) {
+    const rName = recipientName.trim();
+    if (loc.toLowerCase() === rName.toLowerCase()) {
+      loc = '';
+    } else {
+      const escR = rName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      loc = loc.replace(new RegExp(escR, 'gi'), '');
+    }
+  }
 
   // Strip prefix/suffix identifiers
   loc = loc.replace(/^(Sender|Recipient|Receiver|Customer|Shipper|To|From):\s*/i, '');
-  loc = loc.replace(/\s*-\s*(Sender|Recipient|Receiver|Customer|Shipper):.*$/i, '');
+  loc = loc.replace(/\s*[-–—:,/]\s*(Sender|Recipient|Receiver|Customer|Shipper):.*$/i, '');
+  loc = loc.replace(/^[\s,–—\-:/|]+/, '').replace(/[\s,–—\-:/|]+$/, '').trim();
 
-  if (senderName && senderName.trim()) {
-    const sName = senderName.trim();
-    const escaped = sName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    loc = loc.replace(new RegExp(`^${escaped}\\s*[-–—:,/]\\s*`, 'i'), '');
-    loc = loc.replace(new RegExp(`\\s*[-–—:,/]\\s*${escaped}$`, 'i'), '');
-    loc = loc.replace(new RegExp(`\\s*\\(${escaped}\\)`, 'i'), '');
+  // If stageIndex is 0 or 1 (Shipping label created / Package received by FedEx):
+  // These are the ONLY two stages to have the sender address.
+  if (isSenderStage) {
+    if (!loc) {
+      return cleanSenderAddr || fallback;
+    }
+    return loc;
   }
 
-  if (recipientName && recipientName.trim()) {
-    const rName = recipientName.trim();
-    const escaped = rName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    loc = loc.replace(new RegExp(`^${escaped}\\s*[-–—:,/]\\s*`, 'i'), '');
-    loc = loc.replace(new RegExp(`\\s*[-–—:,/]\\s*${escaped}$`, 'i'), '');
-    loc = loc.replace(new RegExp(`\\s*\\(${escaped}\\)`, 'i'), '');
+  // If stageIndex >= 2 (transit stages 3 to 8):
+  // User directive: "the first one is shipping label created and the second package received by FedEx are the only ones to have the FedEx address the. The rest is outside routes"
+  // Strictly CANNOT have sender address or sender name!
+  if (cleanSenderAddr) {
+    const sAddrLower = cleanSenderAddr.toLowerCase();
+    if (loc.toLowerCase() === sAddrLower || (sAddrLower.length > 5 && loc.toLowerCase().includes(sAddrLower))) {
+      return fallback;
+    }
   }
 
-  loc = loc.trim().replace(/^[-–—:,/]\s*/, '').replace(/\s*[-–—:,/]$/, '').trim();
   return loc || fallback;
 }
 
@@ -335,20 +408,29 @@ export function deduplicateAndEnforce8Stages(
   rawHistory: any[] | undefined | null,
   options: DeduplicationOptions = {}
 ): ShipmentHistoryItem[] {
-  const originClean = (options.origin || options.senderAddress || '').trim() || 'Origin Facility';
+  // Use sender address only - strictly never sender name
+  let originClean = stripSenderName(options.senderAddress || options.origin || '', options.senderName);
+  if (!originClean) {
+    originClean = 'FedEx Origin Facility';
+  }
+
   const destClean = (options.destination || '').trim() || 'Destination Address';
   const destCity = extractCityOrRegion(destClean, 'Destination Hub');
   const hub = getSmartFedExHub(originClean, destClean, options.serviceType || undefined);
 
-  // Canonical stage locations adhering to strict mapping rules
+  // Canonical stage locations adhering to strict mapping rules:
+  // - Stages 1 & 2: exact FedEx sender address
+  // - Stages 3 to 6: real outside transit hubs & corridors (never sender address)
+  // - Stage 7: courier delivery route in destination city
+  // - Stage 8: recipient destination address
   const canonicalLocations: string[] = [
-    originClean,                                      // Stage 1: exact origin
-    originClean,                                      // Stage 2: exact origin
+    originClean,                                      // Stage 1: exact sender address
+    originClean,                                      // Stage 2: exact sender address
     hub.hubLocation,                                  // Stage 3: transit hub
     `FedEx Gateway Transit Corridor (${hub.hubName})`, // Stage 4: transit corridor
     `${destCity} Regional Ramp Terminal`,             // Stage 5: destination ramp
     `FedEx Destination Station, ${destCity}`,         // Stage 6: local facility
-    destClean,                                        // Stage 7: exact destination
+    `On Route - ${destCity}`,                          // Stage 7: delivery vehicle route
     destClean                                         // Stage 8: exact destination
   ];
 
@@ -400,16 +482,45 @@ export function deduplicateAndEnforce8Stages(
     }
 
     // Determine clean physical location
+    // USER DIRECTIVE:
+    // "the first one is shipping label created and the second package received by FedEx are the only ones to have the FedEx address the. The rest is outside routes"
+    // "completely remove [sender name] and use real locations it would take from the sender address to the receiver"
     let finalLocation = canonicalLocations[stageIdx];
-    if (stageIdx >= 2 && stageIdx <= 5 && matchedItem && matchedItem.location) {
-      const cleaned = cleanLocationString(
-        matchedItem.location,
-        options.senderName,
-        options.recipientName,
-        canonicalLocations[stageIdx]
-      );
-      if (cleaned && cleaned !== originClean && cleaned !== destClean) {
-        finalLocation = cleaned;
+    if (stageIdx === 0 || stageIdx === 1) {
+      // Stage 1 and Stage 2: The ONLY ones with the FedEx sender address
+      if (matchedItem && matchedItem.location && matchedItem.location.trim()) {
+        const cleaned = stripSenderName(matchedItem.location, options.senderName);
+        if (cleaned && cleaned.toLowerCase() !== (options.senderName || '').trim().toLowerCase()) {
+          finalLocation = cleaned;
+        } else {
+          finalLocation = originClean;
+        }
+      } else {
+        finalLocation = originClean;
+      }
+    } else {
+      // Stages 3 through 8: THE REST IS OUTSIDE ROUTES!
+      // Must NEVER have the sender address or sender name.
+      if (matchedItem && matchedItem.location && matchedItem.location.trim()) {
+        const cleaned = cleanLocationString(
+          matchedItem.location,
+          options.senderName,
+          options.recipientName,
+          canonicalLocations[stageIdx],
+          originClean,
+          stageIdx
+        );
+        const sAddrLower = originClean.toLowerCase();
+        const isSenderAddr = sAddrLower && cleaned.toLowerCase() === sAddrLower;
+        const isSenderAddrSub = sAddrLower && sAddrLower.length > 5 && cleaned.toLowerCase().includes(sAddrLower);
+        const isSenderName = options.senderName && cleaned.toLowerCase() === options.senderName.trim().toLowerCase();
+        if (cleaned && !isSenderAddr && !isSenderAddrSub && !isSenderName) {
+          finalLocation = cleaned;
+        } else {
+          finalLocation = canonicalLocations[stageIdx];
+        }
+      } else {
+        finalLocation = canonicalLocations[stageIdx];
       }
     }
 
@@ -450,12 +561,13 @@ export function deduplicateAndEnforce8Stages(
 
 /**
  * Manual Stage Override Logic:
- * When an admin manually advances a shipment to a specific stage (e.g. Stage 4: "On the way"):
- * 1. Mark Stage 4's timestamp as NOW() (or selected manual time) and set its state to active.
- * 2. Automatically recalculate the timestamps for ALL SUBSEQUENT UNREACHED STAGES (Stages 5-8)
- *    so their dates/times sit in the FUTURE starting from the new manual timestamp up to estimated_delivery_date.
- * 3. Never append (.push()); map over the fixed 8-stage indices.
- * 4. Strictly prevent duplicate status names or out-of-order steps.
+ * When an admin manually advances or updates a shipment to a specific stage:
+ * 1. Save the EXACT location and timing set by the user for that stage (using sender address only, never sender name).
+ * 2. Leave the ones AI calculated as UPCOMING:
+ *    - Preserve their AI-calculated locations and descriptions intact.
+ *    - If their existing scheduled timestamps are already in the future after the manual update time, keep them!
+ *    - Only if an upcoming timestamp is behind the new manual update time, space them smoothly into the future up to estimated delivery date.
+ * 3. Never append (.push()); operate strictly within the fixed 8-stage canonical array.
  */
 export function advanceShipmentToStage(
   currentHistory: ShipmentHistoryItem[] | undefined | null,
@@ -466,6 +578,7 @@ export function advanceShipmentToStage(
     location?: string | null;
     description?: string | null;
     origin?: string | null;
+    senderAddress?: string | null;
     destination?: string | null;
     senderName?: string | null;
     recipientName?: string | null;
@@ -479,6 +592,7 @@ export function advanceShipmentToStage(
   // Step 1: Ensure fixed 8-stage canonical single array
   const stages = deduplicateAndEnforce8Stages(currentHistory, {
     origin: options.origin,
+    senderAddress: options.senderAddress,
     destination: options.destination,
     senderName: options.senderName,
     recipientName: options.recipientName,
@@ -504,24 +618,55 @@ export function advanceShipmentToStage(
     };
   }
 
-  // Step 2: Mark target stage timestamp as manual time (or NOW)
+  // Derive sender address for clean origin fallback - strictly never sender name
+  let originClean = stripSenderName(options.senderAddress || options.origin || '', options.senderName);
+  if (!originClean) {
+    originClean = 'FedEx Origin Facility';
+  }
+
+  const destClean = (options.destination || '').trim() || 'Destination Address';
+  const destCity = extractCityOrRegion(destClean, 'Destination Hub');
+  const hub = getSmartFedExHub(originClean, destClean, options.serviceType || undefined);
+  const canonicalLocations: string[] = [
+    originClean,
+    originClean,
+    hub.hubLocation,
+    `FedEx Gateway Transit Corridor (${hub.hubName})`,
+    `${destCity} Regional Ramp Terminal`,
+    `FedEx Destination Station, ${destCity}`,
+    `On Route - ${destCity}`,
+    destClean
+  ];
+
+  // Step 2: Mark target stage timestamp as manual time set by user (or NOW)
   const manualDate = options.manualTimestamp ? new Date(options.manualTimestamp) : new Date();
   const targetTimeMs = isNaN(manualDate.getTime()) ? Date.now() : manualDate.getTime();
   stages[targetIdx].timestamp = new Date(targetTimeMs).toISOString();
 
-  // Update location if provided, respecting clean location rules
+  // Save the location set by the user:
+  // - Stages 1 & 2: sender address only (never sender name)
+  // - Stages 3 to 8: outside transit routes (never sender address or sender name)
   if (options.location && options.location.trim()) {
+    const cleanedUserLocation = cleanLocationString(
+      options.location,
+      options.senderName,
+      options.recipientName,
+      canonicalLocations[targetIdx],
+      originClean,
+      targetIdx
+    );
+    stages[targetIdx].location = cleanedUserLocation;
+  } else if (!stages[targetIdx].location || (options.senderName && stages[targetIdx].location.trim().toLowerCase() === options.senderName.trim().toLowerCase())) {
     if (targetIdx === 0 || targetIdx === 1) {
-      stages[targetIdx].location = (options.origin || '').trim() || stages[targetIdx].location;
-    } else if (targetIdx === 6 || targetIdx === 7) {
-      stages[targetIdx].location = (options.destination || '').trim() || stages[targetIdx].location;
+      stages[targetIdx].location = originClean;
     } else {
-      stages[targetIdx].location = cleanLocationString(
-        options.location,
-        options.senderName,
-        options.recipientName,
-        stages[targetIdx].location
-      );
+      stages[targetIdx].location = canonicalLocations[targetIdx];
+    }
+  } else if (targetIdx >= 2) {
+    // If target is transit stage, ensure sender address didn't leak
+    const sAddrLower = originClean.toLowerCase();
+    if (stages[targetIdx].location.toLowerCase() === sAddrLower || (sAddrLower.length > 5 && stages[targetIdx].location.toLowerCase().includes(sAddrLower))) {
+      stages[targetIdx].location = canonicalLocations[targetIdx];
     }
   }
 
@@ -536,49 +681,67 @@ export function advanceShipmentToStage(
   for (let i = targetIdx - 1; i >= 0; i--) {
     const existingMs = new Date(stages[i].timestamp).getTime();
     if (isNaN(existingMs) || existingMs >= priorStepBackMs) {
-      priorStepBackMs = priorStepBackMs - 45 * 60 * 1000;
+      priorStepBackMs = priorStepBackMs - 30 * 60 * 1000;
       stages[i].timestamp = new Date(priorStepBackMs).toISOString();
     } else {
       priorStepBackMs = existingMs;
     }
   }
 
-  // Step 4: Automatically recalculate timestamps for ALL SUBSEQUENT UNREACHED STAGES
-  // so their dates/times sit in the FUTURE starting from the new manual timestamp up to estimated_delivery_date
+  // Step 4: Upcoming stages (targetIdx + 1 to 7)
+  // User directive: "still leave the ones ai calculated as upcoming"
+  // Keep their AI-calculated locations and descriptions intact as upcoming!
+  // Check if existing upcoming timestamps are already chronological and in the future relative to targetTimeMs
   const subsequentCount = 7 - targetIdx;
   if (subsequentCount > 0) {
-    let endMs: number;
-    if (options.estimatedDeliveryDate) {
-      const raw = options.estimatedDeliveryDate.trim();
-      const parsedEnd = raw.includes('T') ? new Date(raw) : new Date(`${raw}T17:00:00`);
-      if (!isNaN(parsedEnd.getTime()) && parsedEnd.getTime() > targetTimeMs + subsequentCount * 30 * 60 * 1000) {
-        endMs = parsedEnd.getTime();
-      } else {
-        endMs = targetTimeMs + Math.max(subsequentCount * 12 * 3600 * 1000, 24 * 3600 * 1000);
+    let areUpcomingChronological = true;
+    let prevUpcomingMs = targetTimeMs;
+    for (let i = targetIdx + 1; i <= 7; i++) {
+      const t = new Date(stages[i].timestamp).getTime();
+      if (isNaN(t) || t <= prevUpcomingMs) {
+        areUpcomingChronological = false;
+        break;
       }
-    } else {
-      endMs = targetTimeMs + Math.max(subsequentCount * 12 * 3600 * 1000, 48 * 3600 * 1000);
+      prevUpcomingMs = t;
     }
 
-    const totalSpanMs = endMs - targetTimeMs;
-    const stepMs = totalSpanMs / subsequentCount;
-
-    let runningMs = targetTimeMs;
-    for (let step = 1; step <= subsequentCount; step++) {
-      const nextIdx = targetIdx + step;
-      if (nextIdx === 7) {
-        stages[7].timestamp = new Date(endMs).toISOString();
+    // Only if an upcoming stage timestamp fell behind the new manual timestamp,
+    // recalculate future dates so they sit in the FUTURE starting from targetTimeMs up to estimated_delivery_date,
+    // while keeping all AI-calculated locations and descriptions completely intact!
+    if (!areUpcomingChronological) {
+      let endMs: number;
+      if (options.estimatedDeliveryDate) {
+        const raw = options.estimatedDeliveryDate.toString().trim();
+        const parsedEnd = raw.includes('T') ? new Date(raw) : new Date(`${raw}T17:00:00`);
+        if (!isNaN(parsedEnd.getTime()) && parsedEnd.getTime() > targetTimeMs + subsequentCount * 30 * 60 * 1000) {
+          endMs = parsedEnd.getTime();
+        } else {
+          endMs = targetTimeMs + Math.max(subsequentCount * 8 * 3600 * 1000, 24 * 3600 * 1000);
+        }
       } else {
-        const rawMs = targetTimeMs + step * stepMs;
-        let roundedMs = Math.round(rawMs / 60000) * 60000;
-        if (roundedMs <= runningMs) {
-          roundedMs = runningMs + 30 * 60 * 1000;
+        endMs = targetTimeMs + Math.max(subsequentCount * 8 * 3600 * 1000, 48 * 3600 * 1000);
+      }
+
+      const totalSpanMs = endMs - targetTimeMs;
+      const stepMs = totalSpanMs / subsequentCount;
+
+      let runningMs = targetTimeMs;
+      for (let step = 1; step <= subsequentCount; step++) {
+        const nextIdx = targetIdx + step;
+        if (nextIdx === 7) {
+          stages[7].timestamp = new Date(endMs).toISOString();
+        } else {
+          const rawMs = targetTimeMs + step * stepMs;
+          let roundedMs = Math.round(rawMs / 60000) * 60000;
+          if (roundedMs <= runningMs) {
+            roundedMs = runningMs + 30 * 60 * 1000;
+          }
+          if (roundedMs >= endMs) {
+            roundedMs = endMs - (7 - nextIdx) * 30 * 60 * 1000;
+          }
+          runningMs = roundedMs;
+          stages[nextIdx].timestamp = new Date(roundedMs).toISOString();
         }
-        if (roundedMs >= endMs) {
-          roundedMs = endMs - (7 - nextIdx) * 30 * 60 * 1000;
-        }
-        runningMs = roundedMs;
-        stages[nextIdx].timestamp = new Date(roundedMs).toISOString();
       }
     }
   }
@@ -601,16 +764,17 @@ export function advanceShipmentToStage(
 
 // Local synchronous fallback generator ensuring strict clean locations
 export function generate8StageRoute(options: RouteGeneratorOptions): GeneratedRoutePlan {
-  const originClean = options.origin?.trim() || options.senderAddress?.trim() || 'Origin Location';
+  const originClean = stripSenderName(options.senderAddress?.trim() || options.origin?.trim() || '', options.senderName) || 'FedEx Origin Facility';
   const destClean = options.destination?.trim() || 'Destination Location';
 
   const destCity = extractCityOrRegion(destClean, 'Destination Hub');
   const hub = getSmartFedExHub(originClean, destClean, options.serviceType);
 
-  // Strict location mapping:
-  // - Stages 1 & 2: exact Origin
+  // Strict location mapping adhering to user directive:
+  // - Stages 1 & 2: exact FedEx sender address
   // - Stages 3 to 6: transit hub names / corridors
-  // - Stages 7 & 8: exact Destination
+  // - Stage 7: courier delivery route in destination city
+  // - Stage 8: recipient destination address
   const stageLocations: string[] = [
     originClean,
     originClean,
@@ -618,7 +782,7 @@ export function generate8StageRoute(options: RouteGeneratorOptions): GeneratedRo
     `FedEx Gateway Transit Corridor (${hub.hubName})`,
     `${destCity} Regional Ramp Terminal`,
     `FedEx Destination Station, ${destCity}`,
-    destClean,
+    `On Route - ${destCity}`,
     destClean
   ];
 
@@ -677,7 +841,8 @@ export async function calculateFedExRouteWithAI(options: RouteGeneratorOptions):
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        origin: options.origin || options.senderAddress,
+        origin: options.origin,
+        senderAddress: options.senderAddress,
         destination: options.destination,
         serviceType: options.serviceType,
         packageType: options.packageType,
@@ -698,7 +863,8 @@ export async function calculateFedExRouteWithAI(options: RouteGeneratorOptions):
       if (data.history && data.history.length === 8) {
         // Run strict deduplication pass and location cleanup
         const cleanHistory = deduplicateAndEnforce8Stages(data.history, {
-          origin: options.origin || options.senderAddress,
+          origin: options.origin,
+          senderAddress: options.senderAddress,
           destination: options.destination,
           senderName: options.senderName,
           recipientName: options.recipientName,

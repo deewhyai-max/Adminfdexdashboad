@@ -242,8 +242,12 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
   const handleGenerateRoute = async () => {
     setIsCalculatingRoute(true);
     try {
+      const cleanOriginAddress = (formData.senderAddress && formData.senderAddress.trim())
+        || (formData.originCityState && formData.originCityState.trim() && formData.originCityState.trim().toLowerCase() !== (formData.senderName || '').trim().toLowerCase() ? formData.originCityState.trim() : '')
+        || 'FedEx Origin Facility';
+
       const plan = await calculateFedExRouteWithAI({
-        origin: formData.originCityState || formData.senderAddress,
+        origin: cleanOriginAddress,
         senderAddress: formData.senderAddress,
         destination: formData.destinationAddress,
         recipientName: formData.recipientName,
@@ -314,9 +318,9 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     // 2. Sender Details:
     const senderName = formData.senderName && formData.senderName.trim() ? formData.senderName.trim() : null;
     const senderAddress = formData.senderAddress && formData.senderAddress.trim() ? formData.senderAddress.trim() : null;
-    const originCityState = formData.originCityState && formData.originCityState.trim()
-      ? formData.originCityState.trim()
-      : (senderAddress || senderName || null);
+    const originCityState = (senderAddress && senderAddress.trim())
+      || (formData.originCityState && formData.originCityState.trim() && formData.originCityState.trim().toLowerCase() !== (senderName || '').trim().toLowerCase() ? formData.originCityState.trim() : '')
+      || 'FedEx Origin Facility';
 
     const recipientName = formData.recipientName && formData.recipientName.trim() ? formData.recipientName.trim() : 'Unspecified';
     const destinationAddress = formData.destinationAddress && formData.destinationAddress.trim() ? formData.destinationAddress.trim() : null;
@@ -354,7 +358,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     if (!finalHistory || finalHistory.length !== 8) {
       try {
         const plan = await calculateFedExRouteWithAI({
-          origin: originCityState || senderAddress || 'Origin Facility',
+          origin: originCityState,
           senderAddress: senderAddress || undefined,
           destination: destinationAddress || 'Destination Address',
           recipientName: recipientName,
@@ -379,7 +383,8 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     // Strictly enforce Fixed 8-Stage Single Array & Clean Location Mapping Rules before saving to Supabase:
     const nowIso = new Date().toISOString();
     finalHistory = deduplicateAndEnforce8Stages(finalHistory, {
-      origin: originCityState || senderAddress,
+      origin: originCityState,
+      senderAddress: senderAddress || undefined,
       destination: destinationAddress,
       senderName: senderName || undefined,
       recipientName: recipientName,
@@ -650,7 +655,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                         <input
                           type="text"
                           value={formData.senderName}
-                          onChange={(e) => setFormData({ ...formData, senderName: e.target.value, originCityState: e.target.value })}
+                          onChange={(e) => setFormData({ ...formData, senderName: e.target.value })}
                           className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-sm"
                           placeholder="e.g. FedEx Global Express Hub / John Enterprise"
                           style={{ fontSize: '16px' }}
@@ -664,7 +669,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                         <input
                           type="text"
                           value={formData.senderAddress}
-                          onChange={(e) => setFormData({ ...formData, senderAddress: e.target.value })}
+                          onChange={(e) => setFormData({ ...formData, senderAddress: e.target.value, originCityState: e.target.value })}
                           className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-sm"
                           placeholder="Street, City, State, ZIP (e.g. 3610 Hacks Cross Rd, Memphis, TN)"
                           style={{ fontSize: '16px' }}

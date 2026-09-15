@@ -47,37 +47,105 @@ function determineFedExHub(origin: string, destination: string, serviceType: str
   return { hubName: "FedEx World Hub (SuperHub)", location: "Memphis SuperHub (KMEM), TN" };
 }
 
-// Clean location string utility to prevent embedding personal names into location fields
+// Aggressively strips sender name, prefix labels, and residual fragments from any address/location string
+function stripSenderName(str: string | undefined | null, senderName?: string | null): string {
+  if (!str || !str.trim()) return '';
+  let cleaned = str.trim();
+
+  // Strip known prefix labels
+  cleaned = cleaned.replace(/^(Sender|Shipper|From|Origin|Customer|Client):\s*/i, '');
+  cleaned = cleaned.replace(/\s*[-–—:,/]\s*(Sender|Shipper|Customer|Shipper):.*$/i, '');
+
+  if (senderName && senderName.trim()) {
+    const sName = senderName.trim();
+    if (cleaned.toLowerCase() === sName.toLowerCase()) {
+      return '';
+    }
+
+    const esc = sName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Remove if at beginning with delimiter
+    cleaned = cleaned.replace(new RegExp(`^${esc}\\s*[-–—:,/|]+\\s*`, 'i'), '');
+    cleaned = cleaned.replace(new RegExp(`^${esc}\\s+`, 'i'), '');
+    // Remove if at end with delimiter
+    cleaned = cleaned.replace(new RegExp(`\\s*[-–—:,/|]+\\s*${esc}$`, 'i'), '');
+    cleaned = cleaned.replace(new RegExp(`\\s+${esc}$`, 'i'), '');
+    // Remove if parenthesized
+    cleaned = cleaned.replace(new RegExp(`\\s*\\(${esc}\\)\\s*`, 'gi'), ' ');
+    // Remove any exact occurrences inside delimiters
+    cleaned = cleaned.replace(new RegExp(`([-–—:,/|]\\s*)${esc}(\\s*[-–—:,/|])`, 'gi'), '$1$2');
+
+    // Also strip individual name words if multi-word name (e.g. "Jane Doe" -> check "Jane Doe, ")
+    const words = sName.split(/\s+/).filter(w => w.length > 2);
+    for (const w of words) {
+      const escW = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      cleaned = cleaned.replace(new RegExp(`^${escW}\\s*[-–—:,/|]+\\s*`, 'i'), '');
+      cleaned = cleaned.replace(new RegExp(`\\s*[-–—:,/|]+\\s*${escW}$`, 'i'), '');
+    }
+  }
+
+  return cleaned.replace(/^[\s,–—\-:/|]+/, '').replace(/[\s,–—\-:/|]+$/, '').trim();
+}
+
+// Clean location string utility to prevent embedding personal names into location fields.
+// Rule: Stages 1 & 2 (index 0 & 1) use sender address only.
+// Stages 3 to 8 (index 2 to 7) are outside transit routes and strictly NEVER use sender address or sender name.
 function cleanLocationString(
   rawLocation: string | undefined | null,
   senderName?: string | null,
   recipientName?: string | null,
-  fallback = "FedEx Transit Facility"
+  fallback = "FedEx Transit Facility",
+  senderAddress?: string | null,
+  stageIndex?: number
 ): string {
-  if (!rawLocation || !rawLocation.trim()) return fallback;
+  const isSenderStage = stageIndex === 0 || stageIndex === 1;
+  const cleanSenderAddr = stripSenderName(senderAddress, senderName);
+  const defaultFallback = isSenderStage
+    ? (cleanSenderAddr || fallback)
+    : fallback;
+
+  if (!rawLocation || !rawLocation.trim()) return defaultFallback;
   let loc = rawLocation.trim();
+
+  // Strip sender name aggressively
+  if (senderName && senderName.trim()) {
+    loc = stripSenderName(loc, senderName);
+  }
+
+  // Strip recipient name aggressively
+  if (recipientName && recipientName.trim()) {
+    const rName = recipientName.trim();
+    if (loc.toLowerCase() === rName.toLowerCase()) {
+      loc = '';
+    } else {
+      const escR = rName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      loc = loc.replace(new RegExp(escR, 'gi'), '');
+    }
+  }
 
   // Strip prefix/suffix identifiers
   loc = loc.replace(/^(Sender|Recipient|Receiver|Customer|Shipper|To|From):\s*/i, '');
-  loc = loc.replace(/\s*-\s*(Sender|Recipient|Receiver|Customer|Shipper):.*$/i, '');
+  loc = loc.replace(/\s*[-–—:,/]\s*(Sender|Recipient|Receiver|Customer|Shipper):.*$/i, '');
+  loc = loc.replace(/^[\s,–—\-:/|]+/, '').replace(/[\s,–—\-:/|]+$/, '').trim();
 
-  if (senderName && senderName.trim()) {
-    const sName = senderName.trim();
-    const escaped = sName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    loc = loc.replace(new RegExp(`^${escaped}\\s*[-–—:,/]\\s*`, 'i'), '');
-    loc = loc.replace(new RegExp(`\\s*[-–—:,/]\\s*${escaped}$`, 'i'), '');
-    loc = loc.replace(new RegExp(`\\s*\\(${escaped}\\)`, 'i'), '');
+  // If stageIndex is 0 or 1 (Shipping label created / Package received by FedEx):
+  // These are the ONLY two stages to have the sender address.
+  if (isSenderStage) {
+    if (!loc) {
+      return cleanSenderAddr || fallback;
+    }
+    return loc;
   }
 
-  if (recipientName && recipientName.trim()) {
-    const rName = recipientName.trim();
-    const escaped = rName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    loc = loc.replace(new RegExp(`^${escaped}\\s*[-–—:,/]\\s*`, 'i'), '');
-    loc = loc.replace(new RegExp(`\\s*[-–—:,/]\\s*${escaped}$`, 'i'), '');
-    loc = loc.replace(new RegExp(`\\s*\\(${escaped}\\)`, 'i'), '');
+  // If stageIndex >= 2 (transit stages 3 to 8):
+  // User directive: "the first one is shipping label created and the second package received by FedEx are the only ones to have the FedEx address the. The rest is outside routes"
+  // Strictly CANNOT have sender address or sender name!
+  if (cleanSenderAddr) {
+    const sAddrLower = cleanSenderAddr.toLowerCase();
+    if (loc.toLowerCase() === sAddrLower || (sAddrLower.length > 5 && loc.toLowerCase().includes(sAddrLower))) {
+      return fallback;
+    }
   }
 
-  loc = loc.trim().replace(/^[-–—:,/]\s*/, '').replace(/\s*[-–—:,/]$/, '').trim();
   return loc || fallback;
 }
 
@@ -157,8 +225,9 @@ function generateAlgorithmicFedExRoute(params: {
   startTime?: string;
   estimatedDeliveryDate?: string;
   recipientName?: string;
+  senderName?: string;
 }) {
-  const originClean = params.origin?.trim() || "Origin Station";
+  const originClean = stripSenderName(params.origin, params.senderName) || "FedEx Origin Facility";
   const destClean = params.destination?.trim() || "Destination Address";
   const originCity = extractCityOrRegion(originClean, "Origin Facility");
   const destCity = extractCityOrRegion(destClean, "Destination Facility");
@@ -206,7 +275,7 @@ function generateAlgorithmicFedExRoute(params: {
     {
       stage: 7,
       status: "Out for Delivery",
-      location: destClean,
+      location: `On Route - ${destCity}`,
       desc: "On FedEx vehicle for delivery. Final courier run initiated."
     },
     {
@@ -251,6 +320,7 @@ app.get("/api/health", (req, res) => {
 app.post("/api/fedex/calculate-route", async (req, res) => {
   const {
     origin,
+    senderAddress,
     destination,
     serviceType = "FedEx Priority Overnight",
     packageType = "FedEx Box",
@@ -265,8 +335,11 @@ app.post("/api/fedex/calculate-route", async (req, res) => {
     isSaturdayDelivery
   } = req.body || {};
 
-  const originClean = origin?.trim() || "Dallas, TX";
-  const destClean = destination?.trim() || "Frankfurt, Germany";
+  // Strictly prioritize senderAddress over senderName, origin must never be sender name
+  let originClean = stripSenderName(senderAddress || origin || "", senderName) || "FedEx Origin Facility";
+
+  const destClean = destination?.trim() || "Destination Address";
+  const destCity = extractCityOrRegion(destClean, "Destination Hub");
   const fedExHub = determineFedExHub(originClean, destClean, serviceType);
 
   const apiKey = process.env.GEMINI_API_KEY;
@@ -279,7 +352,8 @@ app.post("/api/fedex/calculate-route", async (req, res) => {
       serviceType,
       startTime,
       estimatedDeliveryDate,
-      recipientName
+      recipientName,
+      senderName
     });
     return res.json({
       success: true,
@@ -330,9 +404,10 @@ Logistical Routing Rules:
    - Middle East / Africa / India: Dubai World Central / DXB Gateway.
 
 3. Strict Milestone Location Mapping Rules:
-   - Stage 1 and Stage 2 locations MUST be EXACTLY: "${originClean}" (exact origin string provided).
-   - Stage 3 to Stage 6 locations MUST be clean transit hub names or transit corridors (e.g. "${fedExHub.location}", regional air ramps). NEVER append or prepend personal names ("${senderName || ''}" or "${recipientName || ''}") into ANY location string!
-   - Stage 7 and Stage 8 locations MUST be EXACTLY: "${destClean}" (exact destination string provided).
+   - Stage 1 and Stage 2 locations MUST be EXACTLY: "${originClean}" (exact FedEx sender address provided).
+   - Stage 3 to Stage 6 locations MUST be authentic outside transit hub names or transit corridors (e.g. "${fedExHub.location}", regional air ramps). NEVER use the sender address or sender name!
+   - Stage 7 location MUST be: "On Route - ${destCity}" (local courier delivery run).
+   - Stage 8 location MUST be EXACTLY: "${destClean}" (exact destination address provided).
 
 4. Timestamps: Generate chronologically sequential, realistic ISO 8601 timestamps progressing smoothly from start time to the delivery target. Ensure each stage is strictly later than the prior stage.
 
@@ -383,12 +458,15 @@ Logistical Routing Rules:
         let loc = s.location;
         if (idx === 0 || idx === 1) {
           loc = originClean;
-        } else if (idx === 6 || idx === 7) {
+        } else if (idx === 7) {
           loc = destClean;
+        } else if (idx === 6) {
+          loc = `On Route - ${destCity}`;
         } else {
-          loc = cleanLocationString(loc, senderName, recipientName, fedExHub.location);
-          if (loc === originClean || loc === destClean) {
-            loc = fedExHub.location;
+          loc = cleanLocationString(loc, senderName, recipientName, fedExHub.location, originClean, idx);
+          const sAddrLower = originClean.toLowerCase();
+          if (loc.toLowerCase() === sAddrLower || (sAddrLower.length > 5 && loc.toLowerCase().includes(sAddrLower))) {
+            loc = idx === 2 ? fedExHub.location : `${destCity} Regional Ramp Terminal`;
           }
         }
         return {

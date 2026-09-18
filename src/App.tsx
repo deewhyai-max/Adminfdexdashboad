@@ -83,7 +83,6 @@ export default function App() {
   // Profile & Approval State
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [isProfileLoading, setIsProfileLoading] = useState(false);
-  const [isTableMissing, setIsTableMissing] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isProfilePromptOpen, setIsProfilePromptOpen] = useState(false);
   const [dismissProfileBanner, setDismissProfileBanner] = useState(false);
@@ -118,9 +117,7 @@ export default function App() {
           error.message?.includes('does not exist') || 
           error.message?.includes('schema cache')
         ) {
-          console.warn("Notice: public.profiles table not found in Supabase schema cache.");
-          setIsTableMissing(true);
-          // If table doesn't exist yet, restrict by default until SQL migration is executed
+          // If table doesn't exist yet, restrict by default until approved
           setProfile({
             id: uid,
             email: userEmail || '',
@@ -132,7 +129,6 @@ export default function App() {
       }
 
       if (data) {
-        setIsTableMissing(false);
         const userProf = data as UserProfile;
         setProfile(userProf);
 
@@ -340,7 +336,6 @@ export default function App() {
       <PendingApproval
         email={user.email || ''}
         userId={user.id}
-        isTableMissing={isTableMissing}
         onRefresh={() => fetchUserProfile(user.id, user.email)}
         onLogout={handleLogout}
       />

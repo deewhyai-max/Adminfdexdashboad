@@ -679,7 +679,7 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                   </div>
                   <div>
                     <h3 className="font-black text-xs uppercase tracking-[0.2em] text-slate-900">Master Automation & Overrides</h3>
-                    <p className="text-[10px] text-slate-400">Database bound • instant sync</p>
+                    <p className="text-[10px] text-slate-400">System verified • Live sync</p>
                   </div>
                 </div>
               </div>

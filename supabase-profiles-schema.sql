@@ -3,11 +3,11 @@
 -- Run this SQL in your Supabase Project: SQL Editor -> New Query -> Run
 -- ==============================================================================
 
--- 1. Create the public.profiles table
+-- 1. Create the public.profiles table (without strict username unique constraint to prevent collisions)
 create table if not exists public.profiles (
   id uuid references auth.users(id) on delete cascade primary key,
   email text not null,
-  username text unique,
+  username text default null,
   name text default null,
   phone text default null,
   company text default null,
@@ -17,6 +17,9 @@ create table if not exists public.profiles (
   created_at timestamptz default timezone('utc'::text, now()) not null,
   updated_at timestamptz default timezone('utc'::text, now()) not null
 );
+
+-- Drop the unique constraint if the table was previously created with it
+alter table if exists public.profiles drop constraint if exists profiles_username_key;
 
 -- 2. Enable Row Level Security (RLS)
 alter table public.profiles enable row level security;

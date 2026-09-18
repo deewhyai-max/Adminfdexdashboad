@@ -509,9 +509,9 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       // Note: Passing false keeps successData visible for the user to view/copy the freshly saved ID
       resetAllShipmentFormState(false);
     } catch (err: any) {
-      console.error('Supabase shipment save failed:', err);
+      console.error('Shipment save error:', err);
       setSaveStatus('failed');
-      setError(`Shipment could not be saved to Supabase: ${err?.message || 'Database error'}`);
+      setError(err?.message || 'Unable to save shipment at this time. Please check your connection and try again.');
     } finally {
       setIsInitializing(false);
     }
@@ -1408,7 +1408,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                     {isInitializing ? (
                       <div className="flex items-center gap-2">
                         <Activity className="w-4 h-4 animate-spin" />
-                        Saving to Supabase Database...
+                        Saving Shipment Details...
                       </div>
                     ) : (
                       <><Package className="w-5 h-5" /> Initialize & Save Shipment <ArrowRight className="w-5 h-5" /></>
@@ -1449,8 +1449,8 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                     </h3>
                     <p className="text-slate-500 text-xs md:text-sm mb-8 font-medium">
                       {saveStatus === 'saved'
-                        ? 'Shipment saved successfully to Supabase cloud database.'
-                        : 'Tracking ID generated and logged to global registry.'}
+                        ? 'Shipment created and registered successfully.'
+                        : 'Tracking ID generated and logged to shipment registry.'}
                     </p>
 
                     <div className="bg-slate-50 border border-slate-100 rounded-2xl p-8 w-full mb-8">

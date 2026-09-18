@@ -21,13 +21,17 @@ import {
   User as UserIcon,
   Save,
   Truck,
-  ArrowRight
+  ArrowRight,
+  ShieldCheck,
+  Edit3
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Shipment, ShipmentStatus, User } from './types';
+import { Shipment, ShipmentStatus, User, UserProfile } from './types';
 import TheForge from './components/TheForge';
 import ManageShipment from './components/ManageShipment';
 import AuthGateway from './components/AuthGateway';
+import PendingApproval from './components/PendingApproval';
+import ProfileModal from './components/ProfileModal';
 import { supabase } from './lib/supabase';
 
 const FEDEX_PURPLE = '#4D148C';
@@ -76,6 +80,14 @@ export default function App() {
   const [user, setUser] = useState<any | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
   
+  // Profile & Approval State
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [isProfileLoading, setIsProfileLoading] = useState(false);
+  const [isTableMissing, setIsTableMissing] = useState(false);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [isProfilePromptOpen, setIsProfilePromptOpen] = useState(false);
+  const [dismissProfileBanner, setDismissProfileBanner] = useState(false);
+
   const [savedShipments, setSavedShipments] = useState<Shipment[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isForgeOpen, setIsForgeOpen] = useState(false);
@@ -91,6 +103,83 @@ export default function App() {
     setIsForgeOpen(true);
   };
 
+  const fetchUserProfile = async (uid: string, userEmail?: string) => {
+    setIsProfileLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', uid)
+        .maybeSingle();
+
+      if (error) {
+        if (
+          error.code === 'PGRST205' || 
+          error.message?.includes('does not exist') || 
+          error.message?.includes('schema cache')
+        ) {
+          console.warn("Notice: public.profiles table not found in Supabase schema cache.");
+          setIsTableMissing(true);
+          // If table doesn't exist yet, restrict by default until SQL migration is executed
+          setProfile({
+            id: uid,
+            email: userEmail || '',
+            is_approved: false
+          });
+          return;
+        }
+        throw error;
+      }
+
+      if (data) {
+        setIsTableMissing(false);
+        const userProf = data as UserProfile;
+        setProfile(userProf);
+
+        // If approved, check if profile is complete
+        if (userProf.is_approved) {
+          const isComplete = Boolean(
+            userProf.name?.trim() && 
+            userProf.username?.trim() && 
+            userProf.phone?.trim()
+          );
+          if (!isComplete) {
+            setIsProfilePromptOpen(true);
+          }
+        }
+      } else {
+        // Record doesn't exist yet in profiles; auto-initialize
+        const defaultUsername = (userEmail || '').split('@')[0]?.toLowerCase() || 'user';
+        const { data: inserted, error: insertError } = await supabase
+          .from('profiles')
+          .insert({
+            id: uid,
+            email: userEmail || '',
+            username: defaultUsername,
+            is_approved: false
+          })
+          .select()
+          .maybeSingle();
+
+        if (insertError) {
+          console.warn('Profile initialization note:', insertError);
+          setProfile({
+            id: uid,
+            email: userEmail || '',
+            username: defaultUsername,
+            is_approved: false
+          });
+        } else if (inserted) {
+          setProfile(inserted as UserProfile);
+        }
+      }
+    } catch (err) {
+      console.error('Error retrieving user profile:', err);
+    } finally {
+      setIsProfileLoading(false);
+    }
+  };
+
   useEffect(() => {
     // Auth Listeners & Initial Recovery
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -99,6 +188,7 @@ export default function App() {
       setIsAuthReady(true);
       
       if (activeUser) {
+        fetchUserProfile(activeUser.id, activeUser.email);
         fetchShipmentsForUser(activeUser.id);
       }
     });
@@ -109,6 +199,7 @@ export default function App() {
       
       if (activeUser) {
         console.log("Auth System Observer:", event, "| User Authenticated. Synchronizing Cloud Ledger...");
+        fetchUserProfile(activeUser.id, activeUser.email);
         fetchShipmentsForUser(activeUser.id);
 
         // --- Real-time Subscription Setup ---
@@ -139,7 +230,8 @@ export default function App() {
           supabase.removeChannel(channel);
         };
       } else {
-        console.log("Auth System Observer:", event, "| Session Terminated. Clearing Ledger.");
+        console.log("Auth System Observer:", event, "| Session Ended. Clearing Ledger.");
+        setProfile(null);
         setSavedShipments([]);
         setSelectedShipment(null);
       }
@@ -156,9 +248,9 @@ export default function App() {
       .order('created_at', { ascending: false });
 
     if (error) {
-      console.error('Core Ledger Recovery failure:', error);
+      console.error('Shipment ledger recovery failure:', error);
     } else if (data) {
-      console.log("Cloud Ledger Recovered:", data.length, "entries found.");
+      console.log("Shipment Ledger Recovered:", data.length, "entries found.");
       setSavedShipments(data);
     }
   };
@@ -170,10 +262,13 @@ export default function App() {
 
   const handleLogin = (userData: any) => {
     setUser(userData);
+    fetchUserProfile(userData.id, userData.email);
   };
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
+    setUser(null);
+    setProfile(null);
   };
 
   const handleOptimisticCreate = (newShipment: Shipment) => {
@@ -217,16 +312,39 @@ export default function App() {
     }).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }, [savedShipments, searchQuery]);
 
-  if (!isAuthReady) {
+  const isProfileComplete = Boolean(
+    profile?.name?.trim() && 
+    profile?.username?.trim() && 
+    profile?.phone?.trim()
+  );
+
+  if (!isAuthReady || (user && isProfileLoading && !profile)) {
     return (
-      <div className="h-screen bg-slate-950 flex items-center justify-center">
+      <div className="h-screen bg-slate-950 flex flex-col items-center justify-center gap-4">
         <Activity className="text-fedex-purple w-12 h-12 animate-pulse" />
+        <span className="text-slate-400 text-xs font-bold tracking-widest uppercase">
+          Verifying Account Permissions...
+        </span>
       </div>
     );
   }
 
   if (!user) {
     return <AuthGateway onLogin={handleLogin} />;
+  }
+
+  // RESTRICTION CHECK:
+  // If user is not approved, block them entirely from entering the website to make shipments
+  if (profile && !profile.is_approved) {
+    return (
+      <PendingApproval
+        email={user.email || ''}
+        userId={user.id}
+        isTableMissing={isTableMissing}
+        onRefresh={() => fetchUserProfile(user.id, user.email)}
+        onLogout={handleLogout}
+      />
+    );
   }
 
   return (
@@ -287,7 +405,7 @@ export default function App() {
           {filteredShipments.length === 0 ? (
             <div className="p-8 text-center">
               <Package className="w-12 h-12 text-slate-700 mx-auto mb-3 opacity-20" />
-              <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest">No Active Nodes</p>
+              <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest">No Active Shipments</p>
             </div>
           ) : (
             <div className="divide-y divide-slate-800/30">
@@ -327,25 +445,45 @@ export default function App() {
           )}
         </div>
 
-        <div className="p-4 border-t border-slate-800 space-y-4">
-          <div className="bg-slate-950/50 border border-slate-800 rounded-2xl p-4">
-            <div className="flex items-center gap-3 mb-1">
-              <div className="w-8 h-8 bg-slate-800 rounded-full flex items-center justify-center border border-slate-700">
-                <UserIcon className="w-4 h-4 text-slate-400" />
+        {/* User Account & Profile Footer */}
+        <div className="p-4 border-t border-slate-800 space-y-3">
+          <div 
+            onClick={() => setIsProfileModalOpen(true)}
+            className="bg-slate-950/60 border border-slate-800 hover:border-slate-700 rounded-2xl p-3 cursor-pointer transition-all group"
+            title="Click to manage profile"
+          >
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 bg-fedex-purple/30 text-white rounded-xl flex items-center justify-center border border-purple-400/30 shrink-0 font-bold text-xs">
+                  {(profile?.name || profile?.username || user.email || 'O')[0].toUpperCase()}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-white text-xs font-bold truncate">
+                    {profile?.name || profile?.username || 'Dispatcher'}
+                  </p>
+                  <p className="text-slate-400 text-[11px] truncate">{user.email}</p>
+                </div>
               </div>
-              <div className="min-w-0">
-                <p className="text-slate-500 text-[8px] font-black uppercase tracking-widest">Operator Session</p>
-                <p className="text-slate-300 text-[10px] font-bold truncate">{user.email}</p>
-              </div>
+              <Edit3 className="w-3.5 h-3.5 text-slate-500 group-hover:text-white transition-colors shrink-0" />
+            </div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-slate-800/80 text-[10px]">
+              <span className="text-emerald-400 font-bold flex items-center gap-1">
+                <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                Approved Dispatcher
+              </span>
+              <span className="text-slate-400 font-semibold group-hover:text-slate-200">
+                Edit Profile
+              </span>
             </div>
           </div>
           
           <button
             onClick={handleLogout}
-            className="w-full flex items-center justify-center gap-3 bg-red-500/10 hover:bg-red-500/20 text-red-500 py-5 rounded-[1.25rem] transition-all text-[10px] font-black uppercase tracking-[0.2em] border border-red-500/20 shadow-lg shadow-red-500/5 active:scale-[0.98]"
+            className="w-full flex items-center justify-center gap-2.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 py-3 rounded-xl transition-all text-xs font-bold border border-red-500/20 cursor-pointer"
           >
             <LogOut className="w-4 h-4" />
-            Terminate Protocol
+            <span>Sign Out</span>
           </button>
         </div>
       </motion.aside>
@@ -363,19 +501,46 @@ export default function App() {
             <div className="flex items-center gap-3">
               <div className="h-8 w-1 bg-fedex-purple rounded-full shrink-0" />
               <h2 className="text-slate-900 font-black text-xs md:text-sm tracking-widest uppercase truncate">
-                FedEx <span className="text-fedex-purple">Tower Node</span>
+                FedEx <span className="text-fedex-purple">Dispatch Portal</span>
               </h2>
             </div>
           </div>
 
           <button 
             onClick={handleOpenForge}
-            className="flex items-center gap-2 bg-fedex-purple hover:bg-purple-700 text-white px-4 md:px-6 py-2 rounded-xl font-black text-[10px] md:text-xs transition-all active:scale-95 shadow-lg shadow-fedex-purple/20 shrink-0 uppercase tracking-widest"
+            className="flex items-center gap-2 bg-fedex-purple hover:bg-purple-700 text-white px-4 md:px-6 py-2 rounded-xl font-bold text-xs transition-all active:scale-95 shadow-lg shadow-fedex-purple/20 shrink-0 cursor-pointer"
           >
             <Plus className="w-4 h-4" />
-            Initialize
+            <span>New Shipment</span>
           </button>
         </header>
+
+        {/* Profile Incomplete Notification Banner */}
+        {!isProfileComplete && !dismissProfileBanner && (
+          <div className="bg-amber-50 border-b border-amber-200 px-4 md:px-8 py-2.5 flex items-center justify-between gap-4 text-amber-900 z-20 shrink-0">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+              <p className="text-xs font-medium text-amber-800 truncate">
+                <strong className="font-bold text-amber-900">Profile incomplete:</strong> Please add your name, username, and phone number for verified shipment records.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => setIsProfilePromptOpen(true)}
+                className="bg-amber-600 hover:bg-amber-700 text-white font-bold px-3 py-1 rounded-lg text-xs transition-colors cursor-pointer"
+              >
+                Complete Profile
+              </button>
+              <button
+                onClick={() => setDismissProfileBanner(true)}
+                className="text-amber-600 hover:text-amber-800 p-1 cursor-pointer"
+                title="Dismiss"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Content Area */}
         <div className="flex-1 overflow-y-auto w-full bg-slate-50/50">
@@ -393,11 +558,11 @@ export default function App() {
             ) : (
               <div className="h-full flex flex-col items-center justify-center p-8 text-center">
                 <div className="w-20 h-20 bg-slate-100 rounded-3xl flex items-center justify-center mb-6 border border-slate-200">
-                  <Activity className="text-slate-300 w-10 h-10 animate-pulse" />
+                  <Truck className="text-slate-400 w-10 h-10" />
                 </div>
-                <h3 className="text-slate-900 font-black text-lg mb-2 uppercase tracking-[0.2em]">Node Ready</h3>
-                <p className="text-slate-400 max-w-xs text-[10px] font-bold uppercase tracking-widest leading-relaxed">
-                  Authentication Verified. Select a registry node from the grid or initialize a new packet.
+                <h3 className="text-slate-900 font-bold text-lg mb-2">Ready to Dispatch</h3>
+                <p className="text-slate-500 max-w-sm text-xs font-normal leading-relaxed">
+                  Select an existing shipment from the history list to view tracking stages, or click "New Shipment" to create a new delivery.
                 </p>
               </div>
             )}
@@ -412,6 +577,25 @@ export default function App() {
         onShipmentCreated={() => {}} 
         onOptimisticCreate={handleOptimisticCreate}
         userId={user.id}
+        profile={profile}
+      />
+
+      {/* Profile Management & Prompt Modal */}
+      <ProfileModal
+        isOpen={isProfileModalOpen || isProfilePromptOpen}
+        onClose={() => {
+          setIsProfileModalOpen(false);
+          setIsProfilePromptOpen(false);
+        }}
+        profile={profile}
+        userEmail={user.email || ''}
+        userId={user.id}
+        isPrompt={isProfilePromptOpen && !isProfileComplete}
+        onProfileUpdated={(updated) => {
+          setProfile(updated);
+          setIsProfilePromptOpen(false);
+          setIsProfileModalOpen(false);
+        }}
       />
 
       <style>{`

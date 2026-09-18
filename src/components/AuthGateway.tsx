@@ -5,7 +5,7 @@
 
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Lock, ShieldCheck, ArrowRight, Activity, AlertCircle, Mail, UserPlus, LogIn } from 'lucide-react';
+import { Lock, ShieldCheck, Activity, AlertCircle, Mail, LogIn } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 interface AuthGatewayProps {
@@ -13,50 +13,50 @@ interface AuthGatewayProps {
 }
 
 export default function AuthGateway({ onLogin }: AuthGatewayProps) {
-  const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setError(null);
-    setMsg(null);
+
+    const cleanEmail = email.trim();
+    if (!cleanEmail) {
+      setError('Please enter your email address.');
+      setIsLoading(false);
+      return;
+    }
+
+    if (!password) {
+      setError('Please enter your password.');
+      setIsLoading(false);
+      return;
+    }
 
     try {
-      if (isLogin) {
-        const { data, error: loginError } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
-        if (loginError) {
-          if (loginError.message === 'Invalid login credentials') {
-            throw new Error('Wrong credentials. Please verify your identifier and cipher.');
-          }
-          throw loginError;
-        }
-        if (data.user) onLogin(data.user);
-      } else {
-        const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-          email,
-          password,
-        });
-        if (signUpError) throw signUpError;
-        
-        // Ensure manual login by signing out if Supabase auto-logged them in
-        if (signUpData.session) {
-          await supabase.auth.signOut();
-        }
+      const { data, error: loginError } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password,
+      });
 
-        setMsg('Node registration successful. You must now sign in to establish a link.');
-        setIsLogin(true);
-        setPassword('');
+      if (loginError) {
+        if (loginError.message?.toLowerCase().includes('invalid login credentials')) {
+          throw new Error('Invalid email or password. Please check your credentials and try again.');
+        }
+        if (loginError.message?.toLowerCase().includes('email not confirmed')) {
+          throw new Error('Please confirm your email address before signing in.');
+        }
+        throw loginError;
+      }
+
+      if (data.user) {
+        onLogin(data.user);
       }
     } catch (err: any) {
-      setError(err.message || 'Verification Failed');
+      setError(err.message || 'Unable to sign in. Please verify your email address and password.');
     } finally {
       setIsLoading(false);
     }
@@ -73,112 +73,110 @@ export default function AuthGateway({ onLogin }: AuthGatewayProps) {
       <motion.div 
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.2 }}
         className="w-full max-w-md relative z-10"
       >
-        <div className="bg-slate-900/80 backdrop-blur-xl border border-slate-800 rounded-[2.5rem] p-8 md:p-12 shadow-2xl">
-          <div className="flex flex-col items-center mb-10 text-center">
-            <div className="w-20 h-20 bg-fedex-purple rounded-3xl flex items-center justify-center mb-6 shadow-[0_0_40px_rgba(77,20,140,0.3)] border border-purple-400/20">
-              <ShieldCheck className="text-white w-10 h-10" />
+        <div className="bg-slate-900/90 backdrop-blur-xl border border-slate-800 rounded-[2rem] p-8 md:p-10 shadow-2xl">
+          {/* Header */}
+          <div className="flex flex-col items-center mb-8 text-center">
+            <div className="w-16 h-16 bg-fedex-purple rounded-2xl flex items-center justify-center mb-5 shadow-[0_0_30px_rgba(77,20,140,0.35)] border border-purple-400/20">
+              <ShieldCheck className="text-white w-8 h-8" />
             </div>
-            <h1 className="text-white text-3xl font-black tracking-tight uppercase leading-none">
-              FedEx <span className="text-fedex-purple">Tower</span>
+            <h1 className="text-white text-2xl font-black tracking-tight uppercase leading-tight">
+              FedEx <span className="text-fedex-purple">Portal</span>
             </h1>
-            <p className="text-slate-500 text-[10px] mt-3 uppercase tracking-[0.4em] font-black">Secure Gateway Protocol</p>
+            <p className="text-slate-400 text-xs mt-2 font-medium max-w-xs">
+              Sign in to manage and track enterprise shipments
+            </p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-6">
+          <form onSubmit={handleSubmit} className="space-y-5">
+            {/* Email Field */}
             <div className="space-y-2">
-              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2 px-1">
-                <Mail className="w-3 h-3" /> Node Identifier
+              <label className="text-xs font-bold text-slate-300 flex items-center gap-2 px-1">
+                <Mail className="w-3.5 h-3.5 text-fedex-purple" />
+                Email Address
               </label>
               <input
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="operator@tower-node.net"
+                placeholder="Enter your email address"
                 required
-                className="w-full bg-slate-950/50 border-2 border-slate-800 text-white px-6 py-5 rounded-2xl focus:outline-none focus:border-fedex-purple transition-all text-base font-bold placeholder:text-slate-700 hover:border-slate-700"
+                autoComplete="email"
+                className="w-full bg-slate-950/70 border border-slate-700 text-white px-4 py-3.5 rounded-xl focus:outline-none focus:border-fedex-purple focus:ring-2 focus:ring-fedex-purple/20 transition-all text-sm font-medium placeholder:text-slate-500 hover:border-slate-600"
+                style={{ fontSize: '16px' }}
               />
             </div>
 
+            {/* Password Field */}
             <div className="space-y-2">
-              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2 px-1">
-                <Lock className="w-3 h-3" /> Access Cipher
+              <label className="text-xs font-bold text-slate-300 flex items-center gap-2 px-1">
+                <Lock className="w-3.5 h-3.5 text-fedex-purple" />
+                Password
               </label>
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••••••"
+                placeholder="Enter your password"
                 required
-                className="w-full bg-slate-950/50 border-2 border-slate-800 text-white px-6 py-5 rounded-2xl focus:outline-none focus:border-fedex-purple transition-all text-base font-bold placeholder:text-slate-700 hover:border-slate-700"
+                autoComplete="current-password"
+                className="w-full bg-slate-950/70 border border-slate-700 text-white px-4 py-3.5 rounded-xl focus:outline-none focus:border-fedex-purple focus:ring-2 focus:ring-fedex-purple/20 transition-all text-sm font-medium placeholder:text-slate-500 hover:border-slate-600"
+                style={{ fontSize: '16px' }}
               />
             </div>
 
+            {/* Error Message */}
             <AnimatePresence mode="wait">
               {error && (
                 <motion.div 
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: 'auto' }}
                   exit={{ opacity: 0, height: 0 }}
-                  className="bg-red-500/10 border border-red-500/20 p-4 rounded-xl flex items-center justify-center gap-3 text-red-500 mb-4"
+                  className="bg-red-500/10 border border-red-500/30 p-3.5 rounded-xl flex items-start gap-2.5 text-red-400"
                 >
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  <span className="text-[10px] font-black uppercase tracking-widest leading-tight">{error}</span>
-                </motion.div>
-              )}
-
-              {msg && (
-                <motion.div 
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="bg-green-500/10 border border-green-500/20 p-4 rounded-xl flex items-center justify-center gap-3 text-green-500 mb-4"
-                >
-                  <ShieldCheck className="w-4 h-4 shrink-0" />
-                  <span className="text-[10px] font-black uppercase tracking-widest leading-tight">{msg}</span>
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-400" />
+                  <span className="text-xs font-medium leading-relaxed">{error}</span>
                 </motion.div>
               )}
             </AnimatePresence>
             
+            {/* Submit Button */}
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full bg-fedex-purple hover:bg-purple-700 text-white font-black py-6 rounded-[1.5rem] transition-all active:scale-[0.98] shadow-2xl shadow-fedex-purple/30 uppercase tracking-[0.2em] disabled:opacity-20 text-xs flex items-center justify-center gap-3 group"
+              className="w-full bg-fedex-purple hover:bg-purple-700 text-white font-bold py-3.5 rounded-xl transition-all active:scale-[0.99] shadow-lg shadow-fedex-purple/25 text-sm flex items-center justify-center gap-2.5 disabled:opacity-50 group cursor-pointer"
             >
               {isLoading ? (
-                <Activity className="w-5 h-5 animate-spin" />
+                <>
+                  <Activity className="w-4 h-4 animate-spin" />
+                  <span>Signing In...</span>
+                </>
               ) : (
                 <>
-                  {isLogin ? (
-                    <>Establish Link <LogIn className="w-4 h-4 group-hover:translate-x-1 transition-transform" /></>
-                  ) : (
-                    <>Register Node <UserPlus className="w-4 h-4 group-hover:translate-x-1 transition-transform" /></>
-                  )}
+                  <span>Sign In</span>
+                  <LogIn className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
                 </>
               )}
             </button>
           </form>
 
-          <button 
-            onClick={() => {
-              setIsLogin(!isLogin);
-              setError(null);
-              setMsg(null);
-            }}
-            className="w-full text-slate-500 text-[10px] font-black uppercase tracking-[0.2em] mt-8 hover:text-slate-300 transition-colors py-2"
-          >
-            {isLogin ? "Initialize New Operator Node" : "Return to Control Gateway"}
-          </button>
+          {/* Help & Information Box */}
+          <div className="mt-8 pt-6 border-t border-slate-800/80 text-center space-y-2">
+            <p className="text-slate-400 text-xs font-medium leading-relaxed">
+              Don't have access yet? Please contact your administrator to be added to the portal.
+            </p>
+            <p className="text-slate-500 text-[11px] leading-relaxed">
+              New accounts require administrator approval before creating or managing shipments.
+            </p>
+          </div>
         </div>
 
-        <div className="mt-12 flex flex-col items-center gap-2 opacity-30">
-          <div className="text-[9px] text-slate-500 font-mono uppercase tracking-[0.4em]">Node Link: Secured</div>
-          <div className="flex gap-4">
-            <div className="w-1 h-1 rounded-full bg-slate-500" />
-            <div className="w-1 h-1 rounded-full bg-slate-500" />
-            <div className="w-1 h-1 rounded-full bg-slate-500" />
-          </div>
+        {/* Security Notice Footer */}
+        <div className="mt-8 flex items-center justify-center gap-2 text-slate-500 text-xs font-medium">
+          <ShieldCheck className="w-3.5 h-3.5 text-slate-500" />
+          <span>Protected by FedEx Enterprise Authentication</span>
         </div>
       </motion.div>
     </div>

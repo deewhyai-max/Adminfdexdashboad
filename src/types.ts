@@ -71,6 +71,20 @@ export interface User {
   pin: string;
 }
 
+export interface UserProfile {
+  id: string;
+  email: string;
+  username?: string | null;
+  name?: string | null;
+  phone?: string | null;
+  company?: string | null;
+  address?: string | null;
+  is_approved: boolean;
+  role?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface AppState {
   isUnlocked: boolean;
   shipments: Shipment[];

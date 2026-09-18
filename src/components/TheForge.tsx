@@ -38,7 +38,7 @@ import {
   Barcode
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Shipment, ShipmentStatus, ShipmentHistoryItem, RouteWaypoint } from '../types';
+import { Shipment, ShipmentStatus, ShipmentHistoryItem, RouteWaypoint, UserProfile } from '../types';
 import { supabase } from '../lib/supabase';
 import { CURRENCY_OPTIONS, CurrencyOption, getCurrencySymbol } from '../constants/currencies';
 import { 
@@ -65,6 +65,7 @@ interface TheForgeProps {
   onShipmentCreated: () => void;
   onOptimisticCreate: (shipment: Shipment) => void;
   userId: string;
+  profile?: UserProfile | null;
 }
 
 export const SERVICE_TYPE_OPTIONS = [
@@ -164,7 +165,7 @@ export const getInitialFormData = () => ({
   estimatedDeliveryDate: getDefaultDeliveryDate(),
 });
 
-export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimisticCreate, userId }: TheForgeProps) {
+export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimisticCreate, userId, profile }: TheForgeProps) {
   const [formData, setFormData] = useState(getInitialFormData);
   const [trackingId, setTrackingId] = useState<string>(generateTrackingId);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle');
@@ -186,8 +187,13 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
 
   // Central State Flushing Function: explicitly resets EVERY single state variable to factory defaults
   const resetAllShipmentFormState = useCallback((clearSuccess = true) => {
-    // 1. Reset all form inputs to factory defaults
-    setFormData(getInitialFormData());
+    // 1. Reset all form inputs to factory defaults (with profile prefill if available)
+    const initial = getInitialFormData();
+    if (profile) {
+      if (profile.name) initial.senderName = profile.name;
+      if (profile.address) initial.senderAddress = profile.address;
+    }
+    setFormData(initial);
 
     // 2. Reset timeline history, route waypoints, and AI logistics routing state
     setMilestones([]);
@@ -445,6 +451,10 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
 
     // Save directly to Supabase with session confirmation
     try {
+      if (profile && !profile.is_approved) {
+        throw new Error("Shipment Authorization Denied: Your account is pending administrator approval. You cannot create shipments at this time.");
+      }
+
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
         const { data: { user: recoveredUser }, error: recoveryError } = await supabase.auth.getUser();

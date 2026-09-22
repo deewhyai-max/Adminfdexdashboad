@@ -14,11 +14,59 @@ app.use(express.json({ limit: "10mb" }));
 // Helper to extract city/region for fallback logic
 function extractCityOrRegion(address: string | undefined | null, fallback: string): string {
   if (!address || !address.trim()) return fallback;
-  const parts = address.split(',').map(p => p.trim()).filter(Boolean);
-  if (parts.length >= 2) {
-    return parts.slice(1, 3).join(', ');
+  let text = address.trim();
+
+  // If already a FedEx location
+  if (/^FedEx/i.test(text)) {
+    return text;
   }
-  return parts[0] || fallback;
+
+  const parts = text.split(',').map(p => p.trim()).filter(Boolean);
+  if (parts.length === 0) return fallback;
+  if (parts.length === 1) {
+    return parts[0].replace(/^[0-9#\s\-/]+/, '').trim() || fallback;
+  }
+  if (parts.length === 2) {
+    if (/^[0-9#]/.test(parts[0])) {
+      return parts[1];
+    }
+    return `${parts[0]}, ${parts[1]}`;
+  }
+
+  const nonStreetParts = parts.filter(p => !/^(apt|suite|ste|unit|bldg|building|floor|fl|rm|room|p\.?o\.?\s*box)\b/i.test(p) && !/^[0-9#]+$/.test(p));
+  const candidates = nonStreetParts.length > 0 && /^[0-9]/.test(nonStreetParts[0]) ? nonStreetParts.slice(1) : nonStreetParts;
+
+  if (candidates.length >= 2) {
+    return `${candidates[0]}, ${candidates[1]}`;
+  }
+  if (candidates.length === 1) {
+    return candidates[0];
+  }
+
+  return `${parts[parts.length - 2]}, ${parts[parts.length - 1]}`;
+}
+
+function getFedExOriginShipCenter(
+  address: string | undefined | null,
+  fallback = "FedEx Ship Center"
+): string {
+  if (!address || !address.trim()) return fallback;
+  const raw = address.trim();
+
+  if (/fedex/i.test(raw)) {
+    return raw;
+  }
+
+  const city = extractCityOrRegion(raw, "");
+  if (city && city.trim()) {
+    const cleanCity = city.replace(/^[0-9#\s\-/]+/, "").trim();
+    if (cleanCity) {
+      return `FedEx Ship Center, ${cleanCity}`;
+    }
+  }
+
+  const cleanRaw = raw.replace(/^[0-9#\s\-/]+/, "").trim();
+  return cleanRaw ? `FedEx Ship Center, ${cleanRaw}` : fallback;
 }
 
 // Select realistic FedEx hub based on origin and destination context
@@ -86,8 +134,8 @@ function stripSenderName(str: string | undefined | null, senderName?: string | n
   return cleaned.replace(/^[\s,–—\-:/|]+/, '').replace(/[\s,–—\-:/|]+$/, '').trim();
 }
 
-// Clean location string utility to prevent embedding personal names into location fields.
-// Rule: Stages 1 & 2 (index 0 & 1) use sender address only.
+// Clean location string utility to prevent embedding personal names or personal street addresses into location fields.
+// Rule: Stages 1 & 2 (index 0 & 1) use an authentic FedEx Ship Center / location near the origin city.
 // Stages 3 to 8 (index 2 to 7) are outside transit routes and strictly NEVER use sender address or sender name.
 function cleanLocationString(
   rawLocation: string | undefined | null,
@@ -98,9 +146,9 @@ function cleanLocationString(
   stageIndex?: number
 ): string {
   const isSenderStage = stageIndex === 0 || stageIndex === 1;
-  const cleanSenderAddr = stripSenderName(senderAddress, senderName);
+  const fedExOriginCenter = getFedExOriginShipCenter(senderAddress || fallback, "FedEx Ship Center");
   const defaultFallback = isSenderStage
-    ? (cleanSenderAddr || fallback)
+    ? fedExOriginCenter
     : fallback;
 
   if (!rawLocation || !rawLocation.trim()) return defaultFallback;
@@ -128,21 +176,36 @@ function cleanLocationString(
   loc = loc.replace(/^[\s,–—\-:/|]+/, '').replace(/[\s,–—\-:/|]+$/, '').trim();
 
   // If stageIndex is 0 or 1 (Shipping label created / Package received by FedEx):
-  // These are the ONLY two stages to have the sender address.
+  // Must use authentic FedEx locations or FedEx Ship Center, NEVER sender personal street address
   if (isSenderStage) {
     if (!loc) {
-      return cleanSenderAddr || fallback;
+      return fedExOriginCenter;
+    }
+    // If the location matches the sender personal address and doesn't mention FedEx, replace with FedEx Ship Center
+    if (senderAddress) {
+      const cleanAddr = stripSenderName(senderAddress, senderName);
+      if (cleanAddr && (loc.toLowerCase() === cleanAddr.toLowerCase() || (cleanAddr.length > 5 && loc.toLowerCase().includes(cleanAddr.toLowerCase())))) {
+        if (!/fedex/i.test(loc)) {
+          return fedExOriginCenter;
+        }
+      }
+    }
+    // If it looks like a residential/commercial street address (e.g. "123 Main St") without "FedEx"
+    if (/^[0-9]+\s+[A-Za-z]/.test(loc) && !/fedex/i.test(loc)) {
+      return fedExOriginCenter;
     }
     return loc;
   }
 
   // If stageIndex >= 2 (transit stages 3 to 8):
-  // User directive: "the first one is shipping label created and the second package received by FedEx are the only ones to have the FedEx address the. The rest is outside routes"
   // Strictly CANNOT have sender address or sender name!
-  if (cleanSenderAddr) {
-    const sAddrLower = cleanSenderAddr.toLowerCase();
-    if (loc.toLowerCase() === sAddrLower || (sAddrLower.length > 5 && loc.toLowerCase().includes(sAddrLower))) {
-      return fallback;
+  if (senderAddress) {
+    const cleanAddr = stripSenderName(senderAddress, senderName);
+    if (cleanAddr) {
+      const sAddrLower = cleanAddr.toLowerCase();
+      if (loc.toLowerCase() === sAddrLower || (sAddrLower.length > 5 && loc.toLowerCase().includes(sAddrLower))) {
+        return fallback;
+      }
     }
   }
 
@@ -231,6 +294,7 @@ function generateAlgorithmicFedExRoute(params: {
   const destClean = params.destination?.trim() || "Destination Address";
   const originCity = extractCityOrRegion(originClean, "Origin Facility");
   const destCity = extractCityOrRegion(destClean, "Destination Facility");
+  const fedExOriginCenter = getFedExOriginShipCenter(originClean, "FedEx Ship Center");
 
   const fedExHub = determineFedExHub(originClean, destClean, params.serviceType || "");
   const stageTimestamps = calculate8StageSpacedTimestamps(params.startTime, params.estimatedDeliveryDate);
@@ -239,13 +303,13 @@ function generateAlgorithmicFedExRoute(params: {
     {
       stage: 1,
       status: "Shipping label created",
-      location: originClean,
+      location: fedExOriginCenter,
       desc: "Shipping label has been created. The package has not yet been handed to FedEx."
     },
     {
       stage: 2,
       status: "Package received by FedEx",
-      location: originClean,
+      location: fedExOriginCenter,
       desc: "Picked up by FedEx. Scanned and verified at origin station."
     },
     {
@@ -373,6 +437,8 @@ app.post("/api/fedex/calculate-route", async (req, res) => {
       }
     });
 
+    const fedExOriginCenter = getFedExOriginShipCenter(originClean, "FedEx Ship Center");
+
     const prompt = `You are the FedEx Master Logistics Routing AI. Calculate an authentic, realistic 8-stage FedEx shipment routing plan with exact FedEx hubs, facilities, waypoints, and scan descriptions tailored to this shipment:
 
 Shipment Specifications:
@@ -404,7 +470,7 @@ Logistical Routing Rules:
    - Middle East / Africa / India: Dubai World Central / DXB Gateway.
 
 3. Strict Milestone Location Mapping Rules:
-   - Stage 1 and Stage 2 locations MUST be EXACTLY: "${originClean}" (exact FedEx sender address provided).
+   - Stage 1 and Stage 2 locations MUST be an authentic FedEx Location or FedEx Ship Center near origin (e.g. "${fedExOriginCenter}"). NEVER use the sender's personal residential address or street address!
    - Stage 3 to Stage 6 locations MUST be authentic outside transit hub names or transit corridors (e.g. "${fedExHub.location}", regional air ramps). NEVER use the sender address or sender name!
    - Stage 7 location MUST be: "On Route - ${destCity}" (local courier delivery run).
    - Stage 8 location MUST be EXACTLY: "${destClean}" (exact destination address provided).
@@ -457,7 +523,7 @@ Logistical Routing Rules:
       const sanitizedHistory = parsed.stages.map((s: any, idx: number) => {
         let loc = s.location;
         if (idx === 0 || idx === 1) {
-          loc = originClean;
+          loc = fedExOriginCenter;
         } else if (idx === 7) {
           loc = destClean;
         } else if (idx === 6) {

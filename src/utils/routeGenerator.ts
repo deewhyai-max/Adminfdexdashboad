@@ -43,15 +43,66 @@ export const FEDEX_8_STAGES: { stage: number; status: ShipmentStatus; defaultDes
   }
 ];
 
-// Helper to extract a city/name from an address string
+// Helper to extract a clean city/region from an address string (e.g. "123 Main St, Dallas, TX 75201" -> "Dallas, TX 75201")
 export function extractCityOrRegion(address: string | undefined | null, fallback: string): string {
   if (!address || !address.trim()) return fallback;
-  const parts = address.split(',').map(p => p.trim()).filter(Boolean);
+  let text = address.trim();
+
+  // If already a FedEx location
+  if (/^FedEx/i.test(text)) {
+    return text;
+  }
+
+  const parts = text.split(',').map(p => p.trim()).filter(Boolean);
   if (parts.length === 0) return fallback;
-  if (parts.length === 1) return parts[0];
-  if (parts.length === 2) return `${parts[0]}, ${parts[1]}`;
-  // E.g. "123 Main St, Dallas, TX 75201" -> "Dallas, TX 75201"
-  return `${parts[1]}, ${parts[2]}`;
+  if (parts.length === 1) {
+    return parts[0].replace(/^[0-9#\s\-/]+/, '').trim() || fallback;
+  }
+  if (parts.length === 2) {
+    // If first part has street number e.g. "123 Main St", take second part
+    if (/^[0-9#]/.test(parts[0])) {
+      return parts[1];
+    }
+    return `${parts[0]}, ${parts[1]}`;
+  }
+
+  // 3 or more parts, e.g. "123 Main St, Suite 100, Austin, TX 78701"
+  const nonStreetParts = parts.filter(p => !/^(apt|suite|ste|unit|bldg|building|floor|fl|rm|room|p\.?o\.?\s*box)\b/i.test(p) && !/^[0-9#]+$/.test(p));
+  const candidates = nonStreetParts.length > 0 && /^[0-9]/.test(nonStreetParts[0]) ? nonStreetParts.slice(1) : nonStreetParts;
+
+  if (candidates.length >= 2) {
+    return `${candidates[0]}, ${candidates[1]}`;
+  }
+  if (candidates.length === 1) {
+    return candidates[0];
+  }
+
+  return `${parts[parts.length - 2]}, ${parts[parts.length - 1]}`;
+}
+
+// Formats an authentic FedEx location or FedEx Ship Center near the origin city, never the sender's private street address
+export function getFedExOriginShipCenter(
+  address: string | undefined | null,
+  fallback = 'FedEx Ship Center'
+): string {
+  if (!address || !address.trim()) return fallback;
+  const raw = address.trim();
+
+  // If it already explicitly mentions FedEx, preserve it
+  if (/fedex/i.test(raw)) {
+    return raw;
+  }
+
+  const city = extractCityOrRegion(raw, '');
+  if (city && city.trim()) {
+    const cleanCity = city.replace(/^[0-9#\s\-/]+/, '').trim();
+    if (cleanCity) {
+      return `FedEx Ship Center, ${cleanCity}`;
+    }
+  }
+
+  const cleanRaw = raw.replace(/^[0-9#\s\-/]+/, '').trim();
+  return cleanRaw ? `FedEx Ship Center, ${cleanRaw}` : fallback;
 }
 
 // Aggressively strips any personal or company sender name from an address or location string
@@ -311,8 +362,9 @@ export function evaluateShipmentMilestones(
   };
 }
 
-// Clean location string utility to prevent embedding personal names into location fields.
-// Sender address is always used instead of sender name.
+// Clean location string utility to prevent embedding personal names or personal street addresses into location fields.
+// Rule: Stages 1 & 2 (index 0 & 1) use an authentic FedEx Ship Center / location near the origin city.
+// Stages 3 to 8 (index 2 to 7) are outside transit routes and strictly NEVER use sender address or sender name.
 export function cleanLocationString(
   rawLocation: string | undefined | null,
   senderName?: string | null,
@@ -322,9 +374,9 @@ export function cleanLocationString(
   stageIndex?: number
 ): string {
   const isSenderStage = stageIndex === 0 || stageIndex === 1;
-  const cleanSenderAddr = stripSenderName(senderAddress, senderName);
+  const fedExOriginCenter = getFedExOriginShipCenter(senderAddress || fallback, 'FedEx Ship Center');
   const defaultFallback = isSenderStage
-    ? (cleanSenderAddr || fallback)
+    ? fedExOriginCenter
     : fallback;
 
   if (!rawLocation || !rawLocation.trim()) return defaultFallback;
@@ -352,21 +404,36 @@ export function cleanLocationString(
   loc = loc.replace(/^[\s,–—\-:/|]+/, '').replace(/[\s,–—\-:/|]+$/, '').trim();
 
   // If stageIndex is 0 or 1 (Shipping label created / Package received by FedEx):
-  // These are the ONLY two stages to have the sender address.
+  // Must use authentic FedEx locations or FedEx Ship Center, NEVER sender personal street address
   if (isSenderStage) {
     if (!loc) {
-      return cleanSenderAddr || fallback;
+      return fedExOriginCenter;
+    }
+    // If the location matches the sender personal address and doesn't mention FedEx, replace with FedEx Ship Center
+    if (senderAddress) {
+      const cleanAddr = stripSenderName(senderAddress, senderName);
+      if (cleanAddr && (loc.toLowerCase() === cleanAddr.toLowerCase() || (cleanAddr.length > 5 && loc.toLowerCase().includes(cleanAddr.toLowerCase())))) {
+        if (!/fedex/i.test(loc)) {
+          return fedExOriginCenter;
+        }
+      }
+    }
+    // If it looks like a residential/commercial street address (e.g. "123 Main St") without "FedEx"
+    if (/^[0-9]+\s+[A-Za-z]/.test(loc) && !/fedex/i.test(loc)) {
+      return fedExOriginCenter;
     }
     return loc;
   }
 
   // If stageIndex >= 2 (transit stages 3 to 8):
-  // User directive: "the first one is shipping label created and the second package received by FedEx are the only ones to have the FedEx address the. The rest is outside routes"
   // Strictly CANNOT have sender address or sender name!
-  if (cleanSenderAddr) {
-    const sAddrLower = cleanSenderAddr.toLowerCase();
-    if (loc.toLowerCase() === sAddrLower || (sAddrLower.length > 5 && loc.toLowerCase().includes(sAddrLower))) {
-      return fallback;
+  if (senderAddress) {
+    const cleanAddr = stripSenderName(senderAddress, senderName);
+    if (cleanAddr) {
+      const sAddrLower = cleanAddr.toLowerCase();
+      if (loc.toLowerCase() === sAddrLower || (sAddrLower.length > 5 && loc.toLowerCase().includes(sAddrLower))) {
+        return fallback;
+      }
     }
   }
 
@@ -412,14 +479,15 @@ export function recalculateUnfilledMilestones(
   if (!originClean) {
     originClean = 'FedEx Origin Facility';
   }
+  const fedExOriginCenter = getFedExOriginShipCenter(originClean, 'FedEx Ship Center');
 
   const destClean = (options.destination || '').trim() || 'Destination Address';
   const destCity = extractCityOrRegion(destClean, 'Destination Hub');
   const hub = getSmartFedExHub(originClean, destClean, options.serviceType || undefined);
 
   const canonicalLocations: string[] = [
-    originClean,                                      // Stage 1: exact sender address
-    originClean,                                      // Stage 2: exact sender address
+    fedExOriginCenter,                                // Stage 1: FedEx Ship Center / location
+    fedExOriginCenter,                                // Stage 2: FedEx Ship Center / location
     hub.hubLocation,                                  // Stage 3: transit hub
     `FedEx Gateway Transit Corridor (${hub.hubName})`, // Stage 4: transit corridor
     `${destCity} Regional Ramp Terminal`,             // Stage 5: destination ramp
@@ -480,13 +548,32 @@ export function recalculateUnfilledMilestones(
     });
   }
 
-  // 1. Fill missing locations for unfilled stages
+  // 1. Fill missing locations for unfilled stages or sanitize accidental sender address/name leaks
   for (let i = 0; i < 8; i++) {
-    if (!stageStates[i].isLocationFilled) {
+    if (!stageStates[i].isLocationFilled || !stageStates[i].location.trim()) {
       stageStates[i].location = canonicalLocations[i];
     } else {
-      if (i >= 2 && options.senderName && stageStates[i].location.toLowerCase() === options.senderName.trim().toLowerCase()) {
+      // If location matches sender name, replace with canonical location
+      if (options.senderName && stageStates[i].location.toLowerCase() === options.senderName.trim().toLowerCase()) {
         stageStates[i].location = canonicalLocations[i];
+      }
+      // For Stage 1 & 2: ensure it uses FedEx Ship Center/location, NEVER the sender's private street address
+      if (i === 0 || i === 1) {
+        const sAddrLower = originClean.toLowerCase();
+        if (
+          stageStates[i].location.toLowerCase() === sAddrLower ||
+          (sAddrLower.length > 5 && stageStates[i].location.toLowerCase().includes(sAddrLower) && !/fedex/i.test(stageStates[i].location)) ||
+          (/^[0-9]+\s+[A-Za-z]/.test(stageStates[i].location) && !/fedex/i.test(stageStates[i].location))
+        ) {
+          stageStates[i].location = canonicalLocations[i];
+        }
+      }
+      // For Stages 3 to 8: outside transit routes, strictly ensure sender address didn't leak
+      if (i >= 2 && originClean) {
+        const sAddrLower = originClean.toLowerCase();
+        if (stageStates[i].location.toLowerCase() === sAddrLower || (sAddrLower.length > 5 && stageStates[i].location.toLowerCase().includes(sAddrLower))) {
+          stageStates[i].location = canonicalLocations[i];
+        }
       }
     }
   }
@@ -651,13 +738,14 @@ export function advanceShipmentToStage(
   if (!originClean) {
     originClean = 'FedEx Origin Facility';
   }
+  const fedExOriginCenter = getFedExOriginShipCenter(originClean, 'FedEx Ship Center');
 
   const destClean = (options.destination || '').trim() || 'Destination Address';
   const destCity = extractCityOrRegion(destClean, 'Destination Hub');
   const hub = getSmartFedExHub(originClean, destClean, options.serviceType || undefined);
   const canonicalLocations: string[] = [
-    originClean,
-    originClean,
+    fedExOriginCenter,
+    fedExOriginCenter,
     hub.hubLocation,
     `FedEx Gateway Transit Corridor (${hub.hubName})`,
     `${destCity} Regional Ramp Terminal`,
@@ -672,7 +760,7 @@ export function advanceShipmentToStage(
   stages[targetIdx].timestamp = new Date(targetTimeMs).toISOString();
 
   // Save the location set by the user:
-  // - Stages 1 & 2: sender address only (never sender name)
+  // - Stages 1 & 2: FedEx Ship Center / location (never sender personal street address or sender name)
   // - Stages 3 to 8: outside transit routes (never sender address or sender name)
   if (options.location && options.location.trim()) {
     const cleanedUserLocation = cleanLocationString(
@@ -685,10 +773,16 @@ export function advanceShipmentToStage(
     );
     stages[targetIdx].location = cleanedUserLocation;
   } else if (!stages[targetIdx].location || (options.senderName && stages[targetIdx].location.trim().toLowerCase() === options.senderName.trim().toLowerCase())) {
-    if (targetIdx === 0 || targetIdx === 1) {
-      stages[targetIdx].location = originClean;
-    } else {
-      stages[targetIdx].location = canonicalLocations[targetIdx];
+    stages[targetIdx].location = canonicalLocations[targetIdx];
+  } else if (targetIdx === 0 || targetIdx === 1) {
+    // Ensure stage 1 and 2 use FedEx Ship Center / location
+    const sAddrLower = originClean.toLowerCase();
+    if (
+      stages[targetIdx].location.toLowerCase() === sAddrLower ||
+      (sAddrLower.length > 5 && stages[targetIdx].location.toLowerCase().includes(sAddrLower) && !/fedex/i.test(stages[targetIdx].location)) ||
+      (/^[0-9]+\s+[A-Za-z]/.test(stages[targetIdx].location) && !/fedex/i.test(stages[targetIdx].location))
+    ) {
+      stages[targetIdx].location = fedExOriginCenter;
     }
   } else if (targetIdx >= 2) {
     // If target is transit stage, ensure sender address didn't leak
@@ -797,15 +891,16 @@ export function generate8StageRoute(options: RouteGeneratorOptions): GeneratedRo
 
   const destCity = extractCityOrRegion(destClean, 'Destination Hub');
   const hub = getSmartFedExHub(originClean, destClean, options.serviceType);
+  const fedExOriginCenter = getFedExOriginShipCenter(originClean, 'FedEx Ship Center');
 
   // Strict location mapping adhering to user directive:
-  // - Stages 1 & 2: exact FedEx sender address
+  // - Stages 1 & 2: FedEx Ship Center / location near origin city (never sender street address)
   // - Stages 3 to 6: transit hub names / corridors
   // - Stage 7: courier delivery route in destination city
   // - Stage 8: recipient destination address
   const stageLocations: string[] = [
-    originClean,
-    originClean,
+    fedExOriginCenter,
+    fedExOriginCenter,
     hub.hubLocation,
     `FedEx Gateway Transit Corridor (${hub.hubName})`,
     `${destCity} Regional Ramp Terminal`,
@@ -832,7 +927,7 @@ export function generate8StageRoute(options: RouteGeneratorOptions): GeneratedRo
 
   FEDEX_8_STAGES.forEach((item, index) => {
     const timeStr = stageTimestamps[index];
-    const location = stageLocations[index] || originClean;
+    const location = stageLocations[index] || fedExOriginCenter;
     const description = stageDescriptions[index] || item.defaultDescription;
 
     history.push({

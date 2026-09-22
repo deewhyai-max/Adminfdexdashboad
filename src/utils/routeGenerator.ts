@@ -396,19 +396,18 @@ export interface DeduplicationOptions {
 }
 
 /**
- * Deduplication Cleanup Utility:
- * Enforces exactly ONE array of 8 ordered milestone objects inside the history JSONB payload (Index 0 through 7).
- * Strictly prevents .push() append loops, removes duplicated stages, restores canonical ordering,
- * spaces timestamps chronologically, and enforces strict physical location mapping:
- * - Stages 1 & 2: Exact Origin string provided in form
- * - Stages 3 to 6: Clean transit hub / corridor names (no personal names)
- * - Stages 7 & 8: Exact Destination string provided in form
+ * Recalculate Unfilled Milestones Utility:
+ * Strictly respects all manual inputs and timing entered by the user (even if AI was previously used or is toggled off).
+ * Any milestone where the user manually set a location, timestamp, status, or description is preserved 100%.
+ * Any milestones that are left unfilled, blank, or missing are intelligently recalculated:
+ * - Timestamps are smoothly interpolated between filled stages and the estimated delivery date.
+ * - Locations follow realistic FedEx transit hub / gateway / local delivery routes.
+ * - Monotonic chronological order is guaranteed without overwriting user-specified times.
  */
-export function deduplicateAndEnforce8Stages(
-  rawHistory: any[] | undefined | null,
+export function recalculateUnfilledMilestones(
+  history: ShipmentHistoryItem[] | undefined | null,
   options: DeduplicationOptions = {}
 ): ShipmentHistoryItem[] {
-  // Use sender address only - strictly never sender name
   let originClean = stripSenderName(options.senderAddress || options.origin || '', options.senderName);
   if (!originClean) {
     originClean = 'FedEx Origin Facility';
@@ -418,11 +417,6 @@ export function deduplicateAndEnforce8Stages(
   const destCity = extractCityOrRegion(destClean, 'Destination Hub');
   const hub = getSmartFedExHub(originClean, destClean, options.serviceType || undefined);
 
-  // Canonical stage locations adhering to strict mapping rules:
-  // - Stages 1 & 2: exact FedEx sender address
-  // - Stages 3 to 6: real outside transit hubs & corridors (never sender address)
-  // - Stage 7: courier delivery route in destination city
-  // - Stage 8: recipient destination address
   const canonicalLocations: string[] = [
     originClean,                                      // Stage 1: exact sender address
     originClean,                                      // Stage 2: exact sender address
@@ -445,118 +439,152 @@ export function deduplicateAndEnforce8Stages(
     'Delivered. Package securely delivered to destination.'
   ];
 
-  const baselineTimestamps = calculate8StageSpacedTimestamps(
-    options.startTime || undefined,
-    options.estimatedDeliveryDate || undefined
-  );
+  const rawArray = Array.isArray(history) ? history : [];
+  
+  interface StageState {
+    status_name: ShipmentStatus;
+    location: string;
+    timestamp: string | null;
+    description: string;
+    isLocationFilled: boolean;
+    isTimestampFilled: boolean;
+    isStatusFilled: boolean;
+    isDescFilled: boolean;
+  }
 
-  const rawArray = Array.isArray(rawHistory) ? rawHistory : [];
+  const stageStates: StageState[] = [];
 
-  const result: ShipmentHistoryItem[] = [];
-
-  for (let stageIdx = 0; stageIdx < CANONICAL_STAGE_ORDER.length; stageIdx++) {
-    const targetStatus = CANONICAL_STAGE_ORDER[stageIdx];
-    const targetNorm = targetStatus.toLowerCase();
-
-    // Find matching items in raw history
-    const matches = rawArray.filter((item: any) => {
-      if (!item) return false;
-      const sName = (item.status_name || item.stage_name || '').toString().toLowerCase().trim();
-      if (sName === targetNorm) return true;
-      if (stageIdx === 0 && (sName.includes('label created') || sName.includes('shipping label'))) return true;
-      if (stageIdx === 1 && (sName.includes('package received') || sName.includes('picked up'))) return true;
-      if (stageIdx === 2 && sName === 'in transit') return true;
-      if (stageIdx === 3 && (sName === 'on the way' || sName.includes('way'))) return true;
-      if (stageIdx === 4 && (sName.includes('arriving at destination') || sName.includes('destination facility'))) return true;
-      if (stageIdx === 5 && (sName.includes('at local') || sName.includes('local fedex'))) return true;
-      if (stageIdx === 6 && (sName.includes('out for delivery') || sName.includes('delivery route'))) return true;
-      if (stageIdx === 7 && (sName.includes('delivered') && !sName.includes('out'))) return true;
-      return false;
-    });
-
-    let matchedItem: any = null;
-    if (matches.length > 0) {
-      matchedItem = matches[0];
-    } else if (rawArray.length === 8 && rawArray[stageIdx]) {
-      matchedItem = rawArray[stageIdx];
+  for (let i = 0; i < 8; i++) {
+    const raw: any = rawArray[i] || {};
+    const hasStatus = Boolean(raw.status_name && String(raw.status_name).trim());
+    const hasLoc = Boolean(raw.location && String(raw.location).trim());
+    const hasDesc = Boolean(raw.description && String(raw.description).trim());
+    
+    let validTs: string | null = null;
+    if (raw.timestamp && String(raw.timestamp).trim()) {
+      const parsed = new Date(raw.timestamp);
+      if (!isNaN(parsed.getTime())) {
+        validTs = parsed.toISOString();
+      }
     }
 
-    // Determine clean physical location
-    // USER DIRECTIVE:
-    // "the first one is shipping label created and the second package received by FedEx are the only ones to have the FedEx address the. The rest is outside routes"
-    // "completely remove [sender name] and use real locations it would take from the sender address to the receiver"
-    let finalLocation = canonicalLocations[stageIdx];
-    if (stageIdx === 0 || stageIdx === 1) {
-      // Stage 1 and Stage 2: The ONLY ones with the FedEx sender address
-      if (matchedItem && matchedItem.location && matchedItem.location.trim()) {
-        const cleaned = stripSenderName(matchedItem.location, options.senderName);
-        if (cleaned && cleaned.toLowerCase() !== (options.senderName || '').trim().toLowerCase()) {
-          finalLocation = cleaned;
-        } else {
-          finalLocation = originClean;
-        }
-      } else {
-        finalLocation = originClean;
+    stageStates.push({
+      status_name: hasStatus ? (String(raw.status_name).trim() as ShipmentStatus) : CANONICAL_STAGE_ORDER[i],
+      location: hasLoc ? String(raw.location).trim() : '',
+      timestamp: validTs,
+      description: hasDesc ? String(raw.description).trim() : defaultDescriptions[i],
+      isLocationFilled: hasLoc,
+      isTimestampFilled: Boolean(validTs),
+      isStatusFilled: hasStatus,
+      isDescFilled: hasDesc
+    });
+  }
+
+  // 1. Fill missing locations for unfilled stages
+  for (let i = 0; i < 8; i++) {
+    if (!stageStates[i].isLocationFilled) {
+      stageStates[i].location = canonicalLocations[i];
+    } else {
+      if (i >= 2 && options.senderName && stageStates[i].location.toLowerCase() === options.senderName.trim().toLowerCase()) {
+        stageStates[i].location = canonicalLocations[i];
+      }
+    }
+  }
+
+  // 2. Determine anchor times and interpolate timestamps for any stage with missing or unfilled timestamp
+  const defaultStartMs = options.startTime 
+    ? new Date(options.startTime).getTime() 
+    : Date.now();
+  const validStartMs = isNaN(defaultStartMs) ? Date.now() : defaultStartMs;
+
+  let defaultEndMs: number;
+  if (options.estimatedDeliveryDate) {
+    const raw = options.estimatedDeliveryDate.toString().trim();
+    const parsed = raw.includes('T') ? new Date(raw) : new Date(`${raw}T17:00:00`);
+    defaultEndMs = !isNaN(parsed.getTime()) ? parsed.getTime() : validStartMs + 48 * 3600 * 1000;
+  } else {
+    defaultEndMs = validStartMs + 48 * 3600 * 1000;
+  }
+  if (defaultEndMs <= validStartMs) {
+    defaultEndMs = validStartMs + 48 * 3600 * 1000;
+  }
+
+  // Stage 0 fallback if not filled
+  if (!stageStates[0].isTimestampFilled) {
+    stageStates[0].timestamp = new Date(validStartMs).toISOString();
+  }
+
+  // Segment-based interpolation for missing timestamps
+  let lastFilledIdx = 0;
+  while (lastFilledIdx < 8) {
+    let nextFilledIdx = -1;
+    for (let j = lastFilledIdx + 1; j < 8; j++) {
+      if (stageStates[j].isTimestampFilled) {
+        nextFilledIdx = j;
+        break;
+      }
+    }
+
+    const startMs = new Date(stageStates[lastFilledIdx].timestamp!).getTime();
+    let endMs: number;
+    let count: number;
+
+    if (nextFilledIdx !== -1) {
+      endMs = new Date(stageStates[nextFilledIdx].timestamp!).getTime();
+      count = nextFilledIdx - lastFilledIdx;
+      if (endMs <= startMs + count * 30 * 60 * 1000) {
+        endMs = startMs + count * 60 * 60 * 1000;
+        stageStates[nextFilledIdx].timestamp = new Date(endMs).toISOString();
       }
     } else {
-      // Stages 3 through 8: THE REST IS OUTSIDE ROUTES!
-      // Must NEVER have the sender address or sender name.
-      if (matchedItem && matchedItem.location && matchedItem.location.trim()) {
-        const cleaned = cleanLocationString(
-          matchedItem.location,
-          options.senderName,
-          options.recipientName,
-          canonicalLocations[stageIdx],
-          originClean,
-          stageIdx
-        );
-        const sAddrLower = originClean.toLowerCase();
-        const isSenderAddr = sAddrLower && cleaned.toLowerCase() === sAddrLower;
-        const isSenderAddrSub = sAddrLower && sAddrLower.length > 5 && cleaned.toLowerCase().includes(sAddrLower);
-        const isSenderName = options.senderName && cleaned.toLowerCase() === options.senderName.trim().toLowerCase();
-        if (cleaned && !isSenderAddr && !isSenderAddrSub && !isSenderName) {
-          finalLocation = cleaned;
-        } else {
-          finalLocation = canonicalLocations[stageIdx];
+      nextFilledIdx = 8;
+      count = 8 - lastFilledIdx;
+      endMs = Math.max(defaultEndMs, startMs + count * 2 * 3600 * 1000);
+    }
+
+    const unfilledCount = nextFilledIdx - lastFilledIdx - 1;
+    if (unfilledCount > 0) {
+      const stepMs = (endMs - startMs) / (nextFilledIdx - lastFilledIdx);
+      for (let k = lastFilledIdx + 1; k < nextFilledIdx; k++) {
+        if (!stageStates[k].isTimestampFilled) {
+          const rawMs = startMs + (k - lastFilledIdx) * stepMs;
+          const roundedMs = Math.round(rawMs / 60000) * 60000;
+          stageStates[k].timestamp = new Date(roundedMs).toISOString();
         }
-      } else {
-        finalLocation = canonicalLocations[stageIdx];
       }
     }
 
-    // Determine timestamp
-    let finalTimestamp = baselineTimestamps[stageIdx];
-    if (matchedItem && matchedItem.timestamp) {
-      const parsed = new Date(matchedItem.timestamp);
-      if (!isNaN(parsed.getTime())) {
-        finalTimestamp = parsed.toISOString();
-      }
-    }
-
-    // Determine description
-    let finalDescription = defaultDescriptions[stageIdx];
-    if (matchedItem && matchedItem.description && matchedItem.description.trim()) {
-      finalDescription = matchedItem.description.trim();
-    }
-
-    result.push({
-      status_name: targetStatus,
-      location: finalLocation,
-      timestamp: finalTimestamp,
-      description: finalDescription
-    });
+    lastFilledIdx = nextFilledIdx;
   }
 
-  // Ensure chronological monotonicity: stage[i] timestamp >= stage[i-1] timestamp
-  for (let i = 1; i < result.length; i++) {
-    const prevMs = new Date(result[i - 1].timestamp).getTime();
-    const currMs = new Date(result[i].timestamp).getTime();
+  // Final check to guarantee chronological order without shifting user's manual items unless mathematically required
+  for (let i = 1; i < 8; i++) {
+    const prevMs = new Date(stageStates[i - 1].timestamp!).getTime();
+    const currMs = new Date(stageStates[i].timestamp!).getTime();
     if (isNaN(currMs) || currMs <= prevMs) {
-      result[i].timestamp = new Date(prevMs + 30 * 60 * 1000).toISOString();
+      stageStates[i].timestamp = new Date(prevMs + 30 * 60 * 1000).toISOString();
     }
   }
 
-  return result;
+  return stageStates.map(s => ({
+    status_name: s.status_name,
+    location: s.location,
+    timestamp: s.timestamp!,
+    description: s.description
+  }));
+}
+
+/**
+ * Deduplication Cleanup Utility:
+ * Enforces exactly ONE array of 8 ordered milestone objects inside the history JSONB payload (Index 0 through 7).
+ * Strictly respects user manual inputs, locations, and timings while auto-recalculating any unfilled elements.
+ */
+export function deduplicateAndEnforce8Stages(
+  rawHistory: any[] | undefined | null,
+  options: DeduplicationOptions = {}
+): ShipmentHistoryItem[] {
+  // Use smart recalculation of unfilled milestones to strictly preserve user inputs and timing
+  return recalculateUnfilledMilestones(rawHistory, options);
 }
 
 /**

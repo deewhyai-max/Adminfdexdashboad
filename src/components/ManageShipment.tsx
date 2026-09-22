@@ -40,6 +40,7 @@ import {
   calculate8StageSpacedTimestamps,
   evaluateShipmentMilestones,
   deduplicateAndEnforce8Stages,
+  recalculateUnfilledMilestones,
   advanceShipmentToStage,
   CANONICAL_STAGE_ORDER,
   FEDEX_8_STAGES 
@@ -51,7 +52,8 @@ import {
   SIGNATURE_OPTIONS,
   getCurrencySymbol,
   parseAmount,
-  parseCount
+  parseCount,
+  formatAmountString
 } from './TheForge';
 
 interface ManageShipmentProps {
@@ -90,13 +92,22 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
   const [senderAddress, setSenderAddress] = useState(shipment?.sender_address || '');
   const [currency, setCurrency] = useState(shipment?.currency || 'USD');
   const [serviceType, setServiceType] = useState(shipment?.service_type || 'FedEx Priority Overnight');
-  const [valuation, setValuation] = useState((shipment?.asset_value ?? 0).toString());
-  const [fee, setFee] = useState((shipment?.service_fee ?? 0).toString());
+  const [valuation, setValuation] = useState(
+    shipment?.asset_value != null && shipment.asset_value > 0
+      ? shipment.asset_value.toLocaleString('en-US')
+      : (shipment?.asset_value ?? 0).toString()
+  );
+  const [fee, setFee] = useState(
+    shipment?.service_fee != null && shipment.service_fee > 0
+      ? shipment.service_fee.toLocaleString('en-US')
+      : (shipment?.service_fee ?? 0).toString()
+  );
   const [entryTime, setEntryTime] = useState(shipment?.created_at ? new Date(shipment.created_at).toISOString().slice(0, 16) : '');
   const [deliveryDate, setDeliveryDate] = useState(shipment?.estimated_delivery_date || '');
 
   // Package Specs
   const [packageType, setPackageType] = useState(shipment?.package_type || 'FedEx Box (Small/Medium/Large)');
+  const [packageName, setPackageName] = useState(shipment?.package_name || '');
   const [weight, setWeight] = useState(shipment?.weight != null ? shipment.weight.toString() : '');
   const [weightUnit, setWeightUnit] = useState(shipment?.weight_unit || 'lbs');
   const [length, setLength] = useState(shipment?.length != null ? shipment.length.toString() : '');
@@ -149,12 +160,21 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
       setSenderAddress(shipment.sender_address || '');
       setCurrency(shipment.currency || 'USD');
       setServiceType(shipment.service_type || 'FedEx Priority Overnight');
-      setValuation((shipment.asset_value ?? 0).toString());
-      setFee((shipment.service_fee ?? 0).toString());
+      setValuation(
+        shipment.asset_value != null && shipment.asset_value > 0
+          ? shipment.asset_value.toLocaleString('en-US')
+          : (shipment.asset_value ?? 0).toString()
+      );
+      setFee(
+        shipment.service_fee != null && shipment.service_fee > 0
+          ? shipment.service_fee.toLocaleString('en-US')
+          : (shipment.service_fee ?? 0).toString()
+      );
       setEntryTime(shipment.created_at ? new Date(shipment.created_at).toISOString().slice(0, 16) : '');
       setDeliveryDate(shipment.estimated_delivery_date || '');
       setUpdateTime(new Date().toISOString().slice(0, 16));
       setPackageType(shipment.package_type || 'FedEx Box (Small/Medium/Large)');
+      setPackageName(shipment.package_name || '');
       setWeight(shipment.weight != null ? shipment.weight.toString() : '');
       setWeightUnit(shipment.weight_unit || 'lbs');
       setLength(shipment.length != null ? shipment.length.toString() : '');
@@ -321,6 +341,34 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
       ...w,
       estimated_time: freshTimestamps[idx]
     })));
+  };
+
+  const handleRecalculateUnfilled = () => {
+    const cleanOriginAddress = (senderAddress && senderAddress.trim())
+      || (origin && origin.trim() && origin.trim().toLowerCase() !== (senderName || '').trim().toLowerCase() ? origin.trim() : '')
+      || (shipment?.sender_address && shipment.sender_address.trim())
+      || 'FedEx Origin Facility';
+
+    const calculated = recalculateUnfilledMilestones(milestones, {
+      origin: cleanOriginAddress,
+      senderAddress: senderAddress || shipment?.sender_address || undefined,
+      destination: address || shipment?.destination_address || undefined,
+      senderName: senderName || shipment?.sender_name || undefined,
+      recipientName: recipient || shipment?.recipient_name || undefined,
+      serviceType: serviceType || shipment?.service_type || undefined,
+      estimatedDeliveryDate: deliveryDate || shipment?.estimated_delivery_date || undefined
+    });
+
+    const waypoints: RouteWaypoint[] = calculated.map((item, idx) => ({
+      stage: idx + 1,
+      stage_name: item.status_name,
+      location: item.location,
+      estimated_time: item.timestamp,
+      description: item.description
+    }));
+
+    setMilestones(calculated);
+    setRouteWaypoints(waypoints);
   };
 
   const handleSaveMilestones = async () => {
@@ -500,6 +548,7 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
         created_at: entryTime ? new Date(entryTime).toISOString() : shipment.created_at,
         estimated_delivery_date: deliveryDate && deliveryDate.trim() ? deliveryDate.trim().slice(0, 10) : null,
         package_type: packageType && packageType.trim() ? packageType.trim() : 'Box',
+        package_name: packageName && packageName.trim() ? packageName.trim() : null,
         weight: parseAmount(weight, 0),
         weight_unit: weightUnit && weightUnit.trim() ? weightUnit.trim() : 'lbs',
         length: parseAmount(length, 0),
@@ -507,7 +556,7 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
         height: parseAmount(height, 0),
         dimension_unit: dimensionUnit && dimensionUnit.trim() ? dimensionUnit.trim() : 'in',
         num_packages: parseCount(numPackages, 1),
-        declared_value: parseAmount(declaredValue, 0),
+        declared_value: parseAmount(valuation, 0),
         is_dry_ice: Boolean(isDryIce),
         is_hazardous: Boolean(isHazardous),
         is_saturday_delivery: Boolean(isSaturdayDelivery),
@@ -519,33 +568,54 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
         history: milestones.length > 0 ? milestones : shipment.history
       };
 
-      const { error: updateError } = await supabase
-        .from('shipments')
-        .update(updatedData)
-        .eq('id', shipment.id)
-        .eq('user_id', userId);
+      let payloadToUpdate: Record<string, any> = { ...updatedData };
+      let updateSuccess = false;
+      let lastUpdateError: any = null;
 
-      if (updateError) {
-        console.warn('Initial update notice, verifying migration fallback:', updateError.message);
-        if (updateError.message && (updateError.message.includes('column') || updateError.code === 'PGRST204')) {
-          const fallbackData = {
-            recipient_name: updatedData.recipient_name,
-            destination_address: updatedData.destination_address,
-            origin_city_state: updatedData.origin_city_state,
-            asset_value: updatedData.asset_value,
-            service_fee: updatedData.service_fee,
-            created_at: updatedData.created_at,
-            estimated_delivery_date: updatedData.estimated_delivery_date,
-          };
-          const { error: fallbackError } = await supabase
-            .from('shipments')
-            .update(fallbackData)
-            .eq('id', shipment.id)
-            .eq('user_id', userId);
-          if (fallbackError) throw fallbackError;
-        } else {
-          throw updateError;
+      for (let attempt = 0; attempt < 12; attempt++) {
+        const { error: uErr } = await supabase
+          .from('shipments')
+          .update(payloadToUpdate)
+          .eq('id', shipment.id)
+          .eq('user_id', userId);
+
+        if (!uErr) {
+          updateSuccess = true;
+          lastUpdateError = null;
+          break;
         }
+
+        lastUpdateError = uErr;
+        console.warn(`Supabase update attempt ${attempt + 1} rejected:`, uErr.message);
+
+        const colMatch = uErr.message?.match(/Could not find the ['"]([^'"]+)['"] column/i)
+          || uErr.details?.match(/column ['"]([^'"]+)['"] of relation/i)
+          || uErr.message?.match(/column ['"]([^'"]+)['"] does not exist/i);
+
+        if (colMatch && colMatch[1]) {
+          delete payloadToUpdate[colMatch[1]];
+          continue;
+        }
+
+        if (uErr.message?.includes('column') || uErr.code === 'PGRST204' || uErr.code === '42703') {
+          const candidateKeys = [
+            'package_name', 'route_waypoints', 'is_on_hold', 'auto_advance', 'sender_address',
+            'sender_name', 'currency', 'service_type', 'declared_value', 'is_dry_ice',
+            'is_hazardous', 'is_saturday_delivery', 'signature_option', 'is_hold_at_location',
+            'weight_unit', 'dimension_unit', 'package_type', 'weight', 'length', 'width', 'height', 'num_packages'
+          ];
+          const kToRemove = candidateKeys.find(k => k in payloadToUpdate);
+          if (kToRemove) {
+            delete payloadToUpdate[kToRemove];
+            continue;
+          }
+        }
+
+        break;
+      }
+
+      if (!updateSuccess && lastUpdateError) {
+        throw lastUpdateError;
       }
 
       const updatedShipment: Shipment = {
@@ -836,6 +906,15 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                   <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-widest px-1">
                     <span>{milestones.length} Stage Nodes Configured</span>
                     <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleRecalculateUnfilled}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[10px] uppercase tracking-wider transition-all"
+                        title="Preserve all manual edits and timing, recalculating only unfilled stages"
+                      >
+                        <Clock className="w-3 h-3 text-fedex-purple" />
+                        Recalculate Unfilled
+                      </button>
                       {milestones.length === 8 && (
                         <button
                           type="button"
@@ -843,8 +922,8 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                           className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[10px] uppercase tracking-wider transition-all"
                           title="Evenly re-space Stages 2-8 into the future up to Est. Delivery"
                         >
-                          <Clock className="w-3 h-3 text-fedex-purple" />
-                          Re-Space Timestamps
+                          <RefreshCw className="w-3 h-3 text-fedex-purple" />
+                          Re-Space All
                         </button>
                       )}
                       <button
@@ -1235,10 +1314,14 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                     <div className="space-y-2">
                       <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Valuation ({currencySymbol})</label>
                       <input 
-                        type="number"
-                        step="0.01"
+                        type="text"
+                        inputMode="decimal"
                         value={valuation}
                         onChange={(e) => setValuation(e.target.value)}
+                        onBlur={() => {
+                          if (valuation) setValuation(formatAmountString(valuation));
+                        }}
+                        placeholder="e.g. 2,500,000"
                         className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-purple transition-all text-sm font-bold text-slate-900 font-mono"
                         style={{ fontSize: '16px' }}
                       />
@@ -1246,10 +1329,14 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                     <div className="space-y-2">
                       <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Service Fee ({currencySymbol})</label>
                       <input 
-                        type="number"
-                        step="0.01"
+                        type="text"
+                        inputMode="decimal"
                         value={fee}
                         onChange={(e) => setFee(e.target.value)}
+                        onBlur={() => {
+                          if (fee) setFee(formatAmountString(fee));
+                        }}
+                        placeholder="0.00"
                         className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-purple transition-all text-sm font-bold text-slate-900 font-mono"
                         style={{ fontSize: '16px' }}
                       />
@@ -1334,13 +1421,12 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                         />
                       </div>
                       <div>
-                        <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-1">Declared Val ({currencySymbol})</label>
+                        <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-1">Package Name / Info</label>
                         <input
-                          type="number"
-                          step="0.01"
-                          value={declaredValue}
-                          onChange={(e) => setDeclaredValue(e.target.value)}
-                          placeholder="Value"
+                          type="text"
+                          value={packageName}
+                          onChange={(e) => setPackageName(e.target.value)}
+                          placeholder="e.g. Legal Documents"
                           className="w-full bg-white border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-900"
                         />
                       </div>
@@ -1499,9 +1585,14 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                   </div>
 
                   {/* Package Specs if available */}
-                  {(shipment.package_type || (shipment.weight && shipment.weight > 0) || (shipment.declared_value && shipment.declared_value > 0)) && (
+                  {(shipment.package_name || shipment.package_type || (shipment.weight && shipment.weight > 0) || (shipment.asset_value && shipment.asset_value > 0)) && (
                     <div className="py-2 border-b border-slate-50 space-y-1.5">
                       <span className="text-slate-400 text-[8px] font-black uppercase tracking-widest block">Package Specs</span>
+                      {shipment.package_name && (
+                        <div className="text-[11px] font-black text-fedex-purple">
+                          {shipment.package_name}
+                        </div>
+                      )}
                       <div className="text-[10px] text-slate-700 font-medium space-x-2">
                         {shipment.package_type && <span className="font-bold text-slate-900">{shipment.package_type}</span>}
                         {shipment.weight ? <span>• {shipment.weight} {shipment.weight_unit || 'lbs'}</span> : null}
@@ -1512,11 +1603,6 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                           <span>• {shipment.num_packages} pkgs</span>
                         ) : null}
                       </div>
-                      {shipment.declared_value ? (
-                        <div className="text-[9px] text-slate-500 font-bold">
-                          Declared Value: {readOnlyCurrencySymbol}{shipment.declared_value.toLocaleString()}
-                        </div>
-                      ) : null}
                     </div>
                   )}
 

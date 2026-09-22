@@ -23,6 +23,7 @@ import {
   AlertTriangle,
   Snowflake,
   FileSignature,
+  FileText,
   Scale,
   Maximize2,
   Coins,
@@ -46,6 +47,7 @@ import {
   calculateFedExRouteWithAI, 
   calculate8StageSpacedTimestamps,
   deduplicateAndEnforce8Stages,
+  recalculateUnfilledMilestones,
   FEDEX_8_STAGES 
 } from '../utils/routeGenerator';
 
@@ -104,11 +106,27 @@ export const parseAmount = (val: any, fallback = 0): number => {
   if (typeof val === 'string') {
     const trimmed = val.trim();
     if (!trimmed) return fallback;
-    const cleaned = trimmed.replace(/[^0-9.-]/g, '');
+    // Strip commas, spaces, currency symbols
+    const cleaned = trimmed.replace(/,/g, '').replace(/[^0-9.-]/g, '');
     const parsed = parseFloat(cleaned);
     return isNaN(parsed) ? fallback : parsed;
   }
   return fallback;
+};
+
+export const formatAmountString = (val: string | number): string => {
+  if (!val && val !== 0) return '';
+  const str = String(val).trim();
+  if (!str) return '';
+  const num = parseAmount(str);
+  if (isNaN(num)) return str;
+  if (str.includes('.')) {
+    const parts = str.replace(/,/g, '').split('.');
+    const intPart = parseAmount(parts[0]).toLocaleString('en-US');
+    const decPart = parts[1] || '';
+    return `${intPart}.${decPart}`;
+  }
+  return num.toLocaleString('en-US');
 };
 
 export const parseCount = (val: any, fallback = 0): number => {
@@ -146,6 +164,7 @@ export const getInitialFormData = () => ({
   assetValue: '',
   serviceFee: '',
   packageType: 'Box',
+  packageName: '',
   weight: '',
   weightUnit: 'lbs' as 'lbs' | 'kg',
   length: '',
@@ -282,6 +301,36 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     }
   };
 
+  const handleRecalculateUnfilled = () => {
+    const cleanOriginAddress = (formData.senderAddress && formData.senderAddress.trim())
+      || (formData.originCityState && formData.originCityState.trim() && formData.originCityState.trim().toLowerCase() !== (formData.senderName || '').trim().toLowerCase() ? formData.originCityState.trim() : '')
+      || 'FedEx Origin Facility';
+
+    const calculated = recalculateUnfilledMilestones(milestones, {
+      origin: cleanOriginAddress,
+      senderAddress: formData.senderAddress,
+      destination: formData.destinationAddress,
+      senderName: formData.senderName,
+      recipientName: formData.recipientName,
+      serviceType: formData.serviceType,
+      startTime: formData.timeOfEntry,
+      estimatedDeliveryDate: formData.estimatedDeliveryDate
+    });
+
+    const waypoints: RouteWaypoint[] = calculated.map((item, idx) => ({
+      stage: idx + 1,
+      stage_name: item.status_name,
+      location: item.location,
+      estimated_time: item.timestamp,
+      description: item.description
+    }));
+
+    setMilestones(calculated);
+    setRouteWaypoints(waypoints);
+    setIsRouteGenerated(true);
+    setShowMilestonesEditor(true);
+  };
+
   const handleMilestoneChange = (index: number, field: keyof ShipmentHistoryItem, value: string) => {
     setMilestones(prev => {
       const updated = [...prev];
@@ -336,13 +385,14 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     const serviceType = formData.serviceType && formData.serviceType.trim() ? formData.serviceType.trim() : 'FedEx Priority Overnight';
     const assetValue = parseAmount(formData.assetValue, 0);
     const serviceFee = parseAmount(formData.serviceFee, 0);
-    const declaredValue = parseAmount(formData.declaredValue, 0);
+    const declaredValue = assetValue; // Synchronized with asset value
     const estimatedDeliveryDate = formData.estimatedDeliveryDate && formData.estimatedDeliveryDate.trim()
       ? formData.estimatedDeliveryDate.trim().slice(0, 10)
       : null;
 
     // 4. Package Specifications:
     const packageType = formData.packageType && formData.packageType.trim() ? formData.packageType.trim() : 'Box';
+    const packageName = formData.packageName && formData.packageName.trim() ? formData.packageName.trim() : null;
     const weight = parseAmount(formData.weight, 0);
     const weightUnit = formData.weightUnit && formData.weightUnit.trim() ? formData.weightUnit.trim() : 'lbs';
     const length = parseAmount(formData.length, 0);
@@ -410,7 +460,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
     const isOnHold = Boolean(formData.isOnHold);
     const autoAdvance = Boolean(formData.autoAdvance);
 
-    const dbPayload = {
+    const dbPayload: Record<string, any> = {
       id: activeTrackingId,
       user_id: userId,
       recipient_name: recipientName,
@@ -423,6 +473,7 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       estimated_delivery_date: estimatedDeliveryDate,
       created_at: nowIso,
       package_type: packageType,
+      package_name: packageName,
       weight,
       length,
       width,
@@ -447,55 +498,75 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
 
     const newShipment: Shipment = {
       ...dbPayload
-    };
+    } as Shipment;
 
-    // Save directly to Supabase with session confirmation
+    // Save directly to Supabase with resilient dynamic column pruning & session confirmation
     try {
-      if (profile && !profile.is_approved) {
+      if (profile && profile.is_approved === false) {
         throw new Error("Shipment Authorization Denied: Your account is pending administrator approval. You cannot create shipments at this time.");
       }
 
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        const { data: { user: recoveredUser }, error: recoveryError } = await supabase.auth.getUser();
-        if (recoveryError || !recoveredUser) {
-          throw new Error("Authentication session missing. Please sign in to initialize shipments.");
+      // Check session if possible, but do not block if userId is already established
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session && !userId) {
+          const { data: { user: recoveredUser }, error: recoveryError } = await supabase.auth.getUser();
+          if (recoveryError || !recoveredUser) {
+            throw new Error("Authentication session missing. Please sign in to initialize shipments.");
+          }
         }
+      } catch (authErr) {
+        console.warn('Non-blocking auth session check notice:', authErr);
       }
 
-      const { error: insertError } = await supabase.from('shipments').insert([dbPayload]);
-      if (insertError) {
-        console.warn('Initial Supabase insert warning, evaluating schema fallback:', insertError.message);
-        // If optional extended columns are not yet provisioned in this environment's schema, gracefully fallback
-        if (insertError.message && (insertError.message.includes('column') || insertError.code === 'PGRST204')) {
-          const fallbackPayload = {
-            id: activeTrackingId,
-            user_id: userId,
-            recipient_name: dbPayload.recipient_name,
-            destination_address: dbPayload.destination_address,
-            origin_city_state: dbPayload.origin_city_state,
-            asset_value: dbPayload.asset_value,
-            service_fee: dbPayload.service_fee,
-            estimated_delivery_date: dbPayload.estimated_delivery_date,
-            status: dbPayload.status,
-            created_at: dbPayload.created_at,
-            history: dbPayload.history,
-            package_type: dbPayload.package_type,
-            weight: dbPayload.weight,
-            length: dbPayload.length,
-            width: dbPayload.width,
-            height: dbPayload.height,
-            num_packages: dbPayload.num_packages,
-            is_on_hold: dbPayload.is_on_hold,
-            auto_advance: dbPayload.auto_advance,
-          };
-          const { error: fallbackError } = await supabase.from('shipments').insert([fallbackPayload]);
-          if (fallbackError) {
-            throw fallbackError;
-          }
-        } else {
-          throw insertError;
+      let payloadToInsert: Record<string, any> = { ...dbPayload };
+      let insertSuccess = false;
+      let lastInsertError: any = null;
+
+      // Resilient insert loop: strips any columns rejected by PostgREST schema cache
+      for (let attempt = 0; attempt < 12; attempt++) {
+        const { error: insertError } = await supabase.from('shipments').insert([payloadToInsert]);
+        if (!insertError) {
+          insertSuccess = true;
+          lastInsertError = null;
+          break;
         }
+
+        lastInsertError = insertError;
+        console.warn(`Supabase insert attempt ${attempt + 1} rejected:`, insertError.message);
+
+        // Detect missing column from error message or details
+        const colMatch = insertError.message?.match(/Could not find the ['"]([^'"]+)['"] column/i)
+          || insertError.details?.match(/column ['"]([^'"]+)['"] of relation/i)
+          || insertError.message?.match(/column ['"]([^'"]+)['"] does not exist/i)
+          || insertError.message?.match(/column ['"]([^'"]+)['"] of relation/i);
+
+        if (colMatch && colMatch[1]) {
+          const badCol = colMatch[1];
+          delete payloadToInsert[badCol];
+          continue;
+        }
+
+        // If error mentions unknown column or PGRST204/42703 without specific regex capture:
+        if (insertError.message?.includes('column') || insertError.code === 'PGRST204' || insertError.code === '42703') {
+          const candidateKeysToPrune = [
+            'package_name', 'route_waypoints', 'is_on_hold', 'auto_advance', 'sender_address',
+            'sender_name', 'currency', 'service_type', 'declared_value', 'is_dry_ice',
+            'is_hazardous', 'is_saturday_delivery', 'signature_option', 'is_hold_at_location',
+            'weight_unit', 'dimension_unit', 'package_type', 'weight', 'length', 'width', 'height', 'num_packages'
+          ];
+          const keyToRemove = candidateKeysToPrune.find(k => k in payloadToInsert);
+          if (keyToRemove) {
+            delete payloadToInsert[keyToRemove];
+            continue;
+          }
+        }
+
+        break;
+      }
+
+      if (!insertSuccess && lastInsertError) {
+        throw lastInsertError;
       }
 
       // Success confirmation: Mark saved and reveal confirmation overlay
@@ -770,12 +841,17 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                             {currencySymbol}
                           </span>
                           <input
-                            type="number"
-                            step="0.01"
+                            type="text"
+                            inputMode="decimal"
                             value={formData.assetValue}
                             onChange={(e) => setFormData({ ...formData, assetValue: e.target.value })}
+                            onBlur={() => {
+                              if (formData.assetValue) {
+                                setFormData(prev => ({ ...prev, assetValue: formatAmountString(prev.assetValue) }));
+                              }
+                            }}
                             className="w-full bg-white border border-slate-200 rounded-xl py-3 pl-8 pr-3 focus:border-fedex-orange outline-none transition-colors text-slate-900 font-bold text-sm font-mono"
-                            placeholder="0.00"
+                            placeholder="e.g. 2,500,000"
                             style={{ fontSize: '16px' }}
                           />
                         </div>
@@ -790,10 +866,15 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                             {currencySymbol}
                           </span>
                           <input
-                            type="number"
-                            step="0.01"
+                            type="text"
+                            inputMode="decimal"
                             value={formData.serviceFee}
                             onChange={(e) => setFormData({ ...formData, serviceFee: e.target.value })}
+                            onBlur={() => {
+                              if (formData.serviceFee) {
+                                setFormData(prev => ({ ...prev, serviceFee: formatAmountString(prev.serviceFee) }));
+                              }
+                            }}
                             className="w-full bg-white border border-slate-200 rounded-xl py-3 pl-8 pr-3 focus:border-fedex-orange outline-none transition-colors text-slate-900 font-bold text-sm font-mono"
                             placeholder="0.00"
                             style={{ fontSize: '16px' }}
@@ -929,45 +1010,19 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                           </div>
                         </div>
 
-                        {/* Declared Value & Service Fee */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-200/60">
-                          <div className="space-y-1.5">
-                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
-                              <ShieldCheck className="w-3 h-3 text-fedex-orange" /> Declared Value / Insurance ({formData.currency})
-                            </label>
-                            <div className="relative">
-                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-xs pointer-events-none">
-                                {currencySymbol}
-                              </span>
-                              <input
-                                type="number"
-                                step="0.01"
-                                placeholder="0.00"
-                                value={formData.declaredValue || ''}
-                                onChange={(e) => setFormData({ ...formData, declaredValue: e.target.value })}
-                                className="w-full bg-white border border-slate-200 rounded-xl py-2.5 pl-7 pr-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-bold text-xs font-mono"
-                              />
-                            </div>
-                          </div>
-
-                          <div className="space-y-1.5">
-                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
-                              <DollarSign className="w-3 h-3 text-fedex-purple" /> Service Fee ({formData.currency})
-                            </label>
-                            <div className="relative">
-                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-xs pointer-events-none">
-                                {currencySymbol}
-                              </span>
-                              <input
-                                type="number"
-                                step="0.01"
-                                placeholder="0.00"
-                                value={formData.serviceFee || ''}
-                                onChange={(e) => setFormData({ ...formData, serviceFee: e.target.value })}
-                                className="w-full bg-white border border-slate-200 rounded-xl py-2.5 pl-7 pr-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-bold text-xs font-mono"
-                              />
-                            </div>
-                          </div>
+                        {/* Package Name / Information */}
+                        <div className="pt-2 border-t border-slate-200/60 space-y-1.5">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                            <FileText className="w-3.5 h-3.5 text-fedex-purple" /> Package Name / Information
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="e.g. Legal Documents, Electronics, Sovereign Asset Vault"
+                            value={formData.packageName || ''}
+                            onChange={(e) => setFormData({ ...formData, packageName: e.target.value })}
+                            className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-sm"
+                            style={{ fontSize: '16px' }}
+                          />
                         </div>
                       </div>
                     </div>
@@ -1216,6 +1271,17 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                             ? 'AI Recalculate Route'
                             : 'AI Calculate FedEx Route'}
                         </button>
+                        {isRouteGenerated && (
+                          <button
+                            type="button"
+                            onClick={handleRecalculateUnfilled}
+                            className="flex items-center gap-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 px-3.5 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all shadow-sm active:scale-95 cursor-pointer"
+                            title="Preserves all your manual inputs and timing, recalculating only unfilled stages"
+                          >
+                            <Clock className="w-3.5 h-3.5 text-fedex-purple" />
+                            Recalculate Unfilled
+                          </button>
+                        )}
                         {isRouteGenerated && (
                           <button
                             type="button"

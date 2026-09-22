@@ -47,6 +47,7 @@ export interface Shipment {
   created_at: string;
   history: ShipmentHistoryItem[];
   package_type?: string | null;
+  package_name?: string | null;
   weight?: number | null;
   weight_unit?: string | null;
   length?: number | null;

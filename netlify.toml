@@ -1,0 +1,14 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  # Supabase anon key and URL are client-side public variables for the browser SPA.
+  # Omit them from Netlify's secrets scanner so the build succeeds.
+  SECRETS_SCAN_OMIT_KEYS = "VITE_SUPABASE_ANON_KEY,VITE_SUPABASE_URL"
+
+# SPA routing redirect rule so pages and sub-routes reload without 404
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

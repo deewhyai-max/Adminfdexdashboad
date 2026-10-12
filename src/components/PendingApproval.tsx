@@ -95,7 +95,7 @@ export default function PendingApproval({
                 System Department:
               </span>
               <span className="text-slate-300 font-medium">
-                FedEx Dispatch Services
+                Global Dispatch Services
               </span>
             </div>
           </div>

@@ -846,8 +846,8 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                     <Route className="w-4 h-4 text-fedex-orange" />
                   </div>
                   <div>
-                    <h3 className="font-black text-xs uppercase tracking-[0.2em] text-slate-900">FedEx 8-Stage Logistics Engine</h3>
-                    <p className="text-[10px] text-slate-400">AI-calculated milestones & FedEx transit hubs</p>
+                    <h3 className="font-black text-xs uppercase tracking-[0.2em] text-slate-900">Express 8-Stage Logistics Engine</h3>
+                    <p className="text-[10px] text-slate-400">AI-calculated milestones & transit hubs</p>
                   </div>
                 </div>
 

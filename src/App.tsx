@@ -496,7 +496,7 @@ export default function App() {
             <div className="flex items-center gap-3">
               <div className="h-8 w-1 bg-fedex-purple rounded-full shrink-0" />
               <h2 className="text-slate-900 font-black text-xs md:text-sm tracking-widest uppercase truncate">
-                FedEx <span className="text-fedex-purple">Dispatch Portal</span>
+                Global <span className="text-fedex-purple">Dispatch Portal</span>
               </h2>
             </div>
           </div>

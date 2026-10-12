@@ -83,7 +83,7 @@ export default function AuthGateway({ onLogin }: AuthGatewayProps) {
               <ShieldCheck className="text-white w-8 h-8" />
             </div>
             <h1 className="text-white text-2xl font-black tracking-tight uppercase leading-tight">
-              FedEx <span className="text-fedex-purple">Portal</span>
+              Express <span className="text-fedex-purple">Portal</span>
             </h1>
             <p className="text-slate-400 text-xs mt-2 font-medium max-w-xs">
               Sign in to manage and track enterprise shipments

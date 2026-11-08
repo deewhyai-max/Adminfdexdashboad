@@ -14,6 +14,7 @@ import {
   Save,
   CheckCircle2,
   Truck,
+  Car,
   ChevronRight,
   Activity,
   ShieldCheck,
@@ -106,7 +107,10 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
   const [deliveryDate, setDeliveryDate] = useState(shipment?.estimated_delivery_date || '');
 
   // Package Specs
-  const [packageType, setPackageType] = useState(shipment?.package_type || 'FedEx Box (Small/Medium/Large)');
+  const [packageType, setPackageType] = useState(shipment?.package_type || 'Box');
+  const [customPackageInput, setCustomPackageInput] = useState(
+    shipment?.package_name || (shipment?.package_type && !PACKAGE_TYPE_OPTIONS.includes(shipment.package_type) ? shipment.package_type : '')
+  );
   const [packageName, setPackageName] = useState(shipment?.package_name || '');
   const [weight, setWeight] = useState(shipment?.weight != null ? shipment.weight.toString() : '');
   const [weightUnit, setWeightUnit] = useState(shipment?.weight_unit || 'lbs');
@@ -173,7 +177,10 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
       setEntryTime(shipment.created_at ? new Date(shipment.created_at).toISOString().slice(0, 16) : '');
       setDeliveryDate(shipment.estimated_delivery_date || '');
       setUpdateTime(new Date().toISOString().slice(0, 16));
-      setPackageType(shipment.package_type || 'FedEx Box (Small/Medium/Large)');
+      setPackageType(shipment.package_type || 'Box');
+      setCustomPackageInput(
+        shipment.package_name || (shipment.package_type && !PACKAGE_TYPE_OPTIONS.includes(shipment.package_type) ? shipment.package_type : '')
+      );
       setPackageName(shipment.package_name || '');
       setWeight(shipment.weight != null ? shipment.weight.toString() : '');
       setWeightUnit(shipment.weight_unit || 'lbs');
@@ -547,8 +554,18 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
         service_fee: parseAmount(fee, 0),
         created_at: entryTime ? new Date(entryTime).toISOString() : shipment.created_at,
         estimated_delivery_date: deliveryDate && deliveryDate.trim() ? deliveryDate.trim().slice(0, 10) : null,
-        package_type: packageType && packageType.trim() ? packageType.trim() : 'Box',
-        package_name: packageName && packageName.trim() ? packageName.trim() : null,
+        package_type: (() => {
+          const raw = packageType && packageType.trim() ? packageType.trim() : 'Box';
+          const custom = customPackageInput && customPackageInput.trim() ? customPackageInput.trim() : '';
+          if (raw === 'Custom (Write your own)' || raw === 'Your Packaging (custom box)') {
+            return custom || 'Custom Package';
+          }
+          if ((raw.includes('Car') || raw.includes('Vehicle')) && custom) {
+            return `Car: ${custom}`;
+          }
+          return raw;
+        })(),
+        package_name: (customPackageInput && customPackageInput.trim()) || (packageName && packageName.trim() ? packageName.trim() : null),
         weight: parseAmount(weight, 0),
         weight_unit: weightUnit && weightUnit.trim() ? weightUnit.trim() : 'lbs',
         length: parseAmount(length, 0),
@@ -1375,16 +1392,71 @@ export default function ManageShipment({ shipment, onClose, onUpdate, onSyncComp
                     </div>
 
                     <div className="space-y-1.5">
-                      <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block px-1">Package Type</label>
+                      <div className="flex items-center justify-between px-1">
+                        <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block">Package Type</label>
+                        {packageType && (packageType.includes('Car') || packageType.includes('Vehicle')) && (
+                          <span className="inline-flex items-center gap-1 text-[8px] font-black text-fedex-purple bg-purple-50 px-1.5 py-0.5 rounded">
+                            <Car className="w-2.5 h-2.5" /> Vehicle Transport
+                          </span>
+                        )}
+                      </div>
                       <select
                         value={packageType}
-                        onChange={(e) => setPackageType(e.target.value)}
-                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:border-fedex-purple text-xs font-bold text-slate-900"
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setPackageType(val);
+                          if (!val.includes('Custom') && !val.includes('Car') && !val.includes('Your Packaging')) {
+                            setCustomPackageInput('');
+                          }
+                        }}
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 outline-none focus:border-fedex-purple text-xs font-bold text-slate-900 cursor-pointer"
                       >
+                        {!PACKAGE_TYPE_OPTIONS.includes(packageType) && packageType && (
+                          <option value={packageType}>{packageType}</option>
+                        )}
                         {PACKAGE_TYPE_OPTIONS.map(p => (
                           <option key={p} value={p}>{p}</option>
                         ))}
                       </select>
+
+                      {/* Custom Package / Car Details Input */}
+                      {(packageType === 'Custom (Write your own)' ||
+                        packageType === 'Your Packaging (custom box)' ||
+                        packageType === 'Car / Vehicle' ||
+                        packageType === 'Car / Automobile Transport' ||
+                        !PACKAGE_TYPE_OPTIONS.includes(packageType)) && (
+                        <div className="mt-1.5 p-2 bg-purple-50/70 border border-purple-200/80 rounded-xl space-y-1">
+                          <label className="text-[8px] font-black uppercase tracking-wider text-fedex-purple flex items-center justify-between">
+                            <span className="flex items-center gap-1">
+                              {packageType?.includes('Car') || packageType?.includes('Vehicle') ? (
+                                <Car className="w-3 h-3 text-fedex-purple" />
+                              ) : (
+                                <Edit3 className="w-3 h-3 text-fedex-purple" />
+                              )}
+                              {packageType?.includes('Car') || packageType?.includes('Vehicle')
+                                ? 'Specify Vehicle Details (Make, Model, Year)'
+                                : 'Write Custom Package Description'}
+                            </span>
+                            <span className="text-[8px] font-bold text-slate-400 lowercase">saved with shipment</span>
+                          </label>
+                          <input
+                            type="text"
+                            placeholder={
+                              packageType?.includes('Car') || packageType?.includes('Vehicle')
+                                ? 'e.g. 2024 Mercedes-Benz G63 AMG / Tesla Model S / Sedan'
+                                : 'Write custom package name (e.g. Machinery, Diamond Watch, Crate)'
+                            }
+                            value={customPackageInput}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setCustomPackageInput(val);
+                              setPackageName(val);
+                            }}
+                            className="w-full bg-white border border-purple-200 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-900 outline-none focus:border-fedex-purple shadow-xs"
+                            style={{ fontSize: '16px' }}
+                          />
+                        </div>
+                      )}
                     </div>
 
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-2">

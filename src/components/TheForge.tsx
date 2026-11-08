@@ -19,6 +19,7 @@ import {
   ShieldAlert,
   Building,
   Truck,
+  Car,
   ShieldCheck,
   AlertTriangle,
   Snowflake,
@@ -85,6 +86,9 @@ export const SERVICE_TYPE_OPTIONS = [
 
 export const PACKAGE_TYPE_OPTIONS = [
   'Box',
+  'Car / Vehicle',
+  'Car / Automobile Transport',
+  'Custom (Write your own)',
   'FedEx Box (Small/Medium/Large)',
   'FedEx Envelope',
   'FedEx Pak',
@@ -164,6 +168,7 @@ export const getInitialFormData = () => ({
   assetValue: '',
   serviceFee: '',
   packageType: 'Box',
+  customPackageType: '',
   packageName: '',
   weight: '',
   weightUnit: 'lbs' as 'lbs' | 'kg',
@@ -391,8 +396,15 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
       : null;
 
     // 4. Package Specifications:
-    const packageType = formData.packageType && formData.packageType.trim() ? formData.packageType.trim() : 'Box';
-    const packageName = formData.packageName && formData.packageName.trim() ? formData.packageName.trim() : null;
+    const rawPackageType = formData.packageType && formData.packageType.trim() ? formData.packageType.trim() : 'Box';
+    const customType = formData.customPackageType && formData.customPackageType.trim() ? formData.customPackageType.trim() : '';
+    let packageType = rawPackageType;
+    if (rawPackageType === 'Custom (Write your own)' || rawPackageType === 'Your Packaging (custom box)') {
+      packageType = customType || 'Custom Package';
+    } else if ((rawPackageType.includes('Car') || rawPackageType.includes('Vehicle')) && customType) {
+      packageType = `Car: ${customType}`;
+    }
+    const packageName = customType || (formData.packageName && formData.packageName.trim() ? formData.packageName.trim() : null);
     const weight = parseAmount(formData.weight, 0);
     const weightUnit = formData.weightUnit && formData.weightUnit.trim() ? formData.weightUnit.trim() : 'lbs';
     const length = parseAmount(formData.length, 0);
@@ -891,32 +903,93 @@ export default function TheForge({ isOpen, onClose, onShipmentCreated, onOptimis
                           </h4>
                         </div>
                         
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                          {/* Package Type */}
-                          <div className="space-y-1.5">
-                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Package Type</label>
-                            <select
-                              value={formData.packageType || 'FedEx Box (Small/Medium/Large)'}
-                              onChange={(e) => setFormData({ ...formData, packageType: e.target.value })}
-                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-xs"
-                            >
-                              {PACKAGE_TYPE_OPTIONS.map((pt) => (
-                                <option key={pt} value={pt}>{pt}</option>
-                              ))}
-                            </select>
+                        <div className="space-y-4">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            {/* Package Type */}
+                            <div className="space-y-1.5">
+                              <div className="flex items-center justify-between">
+                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Package Type</label>
+                                {formData.packageType && (formData.packageType.includes('Car') || formData.packageType.includes('Vehicle')) && (
+                                  <span className="inline-flex items-center gap-1 text-[9px] font-black text-fedex-purple bg-purple-50 px-2 py-0.5 rounded-md">
+                                    <Car className="w-3 h-3" /> Vehicle Transport
+                                  </span>
+                                )}
+                              </div>
+                              <select
+                                value={formData.packageType || 'Box'}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setFormData({ 
+                                    ...formData, 
+                                    packageType: val,
+                                    customPackageType: (val.includes('Custom') || val.includes('Car') || val.includes('Your Packaging')) ? formData.customPackageType : ''
+                                  });
+                                }}
+                                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-xs cursor-pointer"
+                              >
+                                {!PACKAGE_TYPE_OPTIONS.includes(formData.packageType) && formData.packageType && (
+                                  <option value={formData.packageType}>{formData.packageType}</option>
+                                )}
+                                {PACKAGE_TYPE_OPTIONS.map((pt) => (
+                                  <option key={pt} value={pt}>{pt}</option>
+                                ))}
+                              </select>
+                            </div>
+
+                            {/* Number of Packages */}
+                            <div className="space-y-1.5">
+                              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Num. of Packages</label>
+                              <input
+                                type="number"
+                                min="1"
+                                value={formData.numPackages || '1'}
+                                onChange={(e) => setFormData({ ...formData, numPackages: e.target.value })}
+                                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-sm"
+                              />
+                            </div>
                           </div>
 
-                          {/* Number of Packages */}
-                          <div className="space-y-1.5">
-                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Num. of Packages</label>
-                            <input
-                              type="number"
-                              min="1"
-                              value={formData.numPackages || '1'}
-                              onChange={(e) => setFormData({ ...formData, numPackages: e.target.value })}
-                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-3 outline-none focus:border-fedex-orange transition-colors text-slate-900 font-medium text-sm"
-                            />
-                          </div>
+                          {/* Custom Package / Car Specification Input */}
+                          {(formData.packageType === 'Custom (Write your own)' ||
+                            formData.packageType === 'Your Packaging (custom box)' ||
+                            formData.packageType === 'Car / Vehicle' ||
+                            formData.packageType === 'Car / Automobile Transport' ||
+                            !PACKAGE_TYPE_OPTIONS.includes(formData.packageType)) && (
+                            <div className="p-3 bg-purple-50/70 border border-purple-200 rounded-xl space-y-1.5">
+                              <label className="text-[9px] font-black uppercase tracking-wider text-fedex-purple flex items-center justify-between">
+                                <span className="flex items-center gap-1.5">
+                                  {formData.packageType?.includes('Car') || formData.packageType?.includes('Vehicle') ? (
+                                    <Car className="w-3.5 h-3.5 text-fedex-purple" />
+                                  ) : (
+                                    <Edit3 className="w-3.5 h-3.5 text-fedex-purple" />
+                                  )}
+                                  {formData.packageType?.includes('Car') || formData.packageType?.includes('Vehicle')
+                                    ? 'Specify Car / Vehicle Details (Make, Model, Year)'
+                                    : 'Write Your Custom Package Name / Description'}
+                                </span>
+                                <span className="text-[8px] font-bold text-slate-400 lowercase">saved with shipment</span>
+                              </label>
+                              <input
+                                type="text"
+                                placeholder={
+                                  formData.packageType?.includes('Car') || formData.packageType?.includes('Vehicle')
+                                    ? 'e.g. 2024 Mercedes-Benz G63 AMG / Tesla Model S / Sedan'
+                                    : 'e.g. Luxury Timepiece, Sovereign Gold Vault, Heavy Machinery'
+                                }
+                                value={formData.customPackageType || ''}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setFormData({
+                                    ...formData,
+                                    customPackageType: val,
+                                    packageName: val || formData.packageName
+                                  });
+                                }}
+                                className="w-full bg-white border border-purple-200 rounded-lg px-3.5 py-2.5 text-xs font-bold text-slate-900 outline-none focus:border-fedex-purple focus:ring-2 focus:ring-fedex-purple/20 shadow-xs"
+                                style={{ fontSize: '16px' }}
+                              />
+                            </div>
+                          )}
                         </div>
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

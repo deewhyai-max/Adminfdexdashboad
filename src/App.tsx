@@ -21,6 +21,7 @@ import {
   User as UserIcon,
   Save,
   Truck,
+  Car,
   ArrowRight,
   ShieldCheck,
   Edit3
@@ -422,9 +423,24 @@ export default function App() {
                       autoAdvance={shipment.auto_advance} 
                     />
                   </div>
-                  <h3 className="text-slate-200 text-base font-black uppercase tracking-wider truncate mb-2">
+                  <h3 className="text-slate-200 text-base font-black uppercase tracking-wider truncate mb-1">
                     {shipment.recipient_name}
                   </h3>
+                  {shipment.package_type && (
+                    <div className="flex items-center gap-1 text-[9px] font-bold text-slate-400 mb-2 truncate">
+                      {shipment.package_type.toLowerCase().includes('car') || shipment.package_type.toLowerCase().includes('vehicle') ? (
+                        <span className="text-purple-300 inline-flex items-center gap-1 font-black">
+                          <Car className="w-3 h-3 text-purple-400" />
+                          {shipment.package_type}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 inline-flex items-center gap-1">
+                          <Package className="w-2.5 h-2.5 text-slate-500" />
+                          {shipment.package_type}
+                        </span>
+                      )}
+                    </div>
+                  )}
                   <div className="flex items-center gap-2 text-slate-500 text-[10px] font-bold uppercase tracking-widest">
                     <Clock className="w-3.5 h-3.5" />
                     {(() => {
